@@ -27,7 +27,7 @@ class PoolEntry:
     r: int
     g: int
     b: int
-    status: str = 'pending'  # pending, mining, confirmed, cancelled
+    status: str = "pending"  # pending, mining, confirmed, cancelled
     cancel_event: threading.Event = field(default_factory=threading.Event)
     pixel: Optional[Pixel] = None  # filled once mining starts
 
@@ -60,7 +60,9 @@ class MiningPool:
     def start(self):
         """Start mining worker threads."""
         for i in range(self._num_workers):
-            t = threading.Thread(target=self._worker_loop, name=f'miner-{i}', daemon=True)
+            t = threading.Thread(
+                target=self._worker_loop, name=f"miner-{i}", daemon=True
+            )
             t.start()
             self._workers.append(t)
         logger.info("Started %d mining workers", self._num_workers)
@@ -77,15 +79,24 @@ class MiningPool:
             t.join(timeout=2)
         self._workers.clear()
 
-    def add_pixel(self, pixel_id: str, x: int, y: int, r: int, g: int, b: int) -> PoolEntry:
+    def add_pixel(
+        self, pixel_id: str, x: int, y: int, r: int, g: int, b: int
+    ) -> PoolEntry:
         """Add a pixel request to the pool."""
         entry = PoolEntry(id=pixel_id, x=x, y=y, r=r, g=g, b=b)
         with self._lock:
             self._entries[pixel_id] = entry
             self._queue.append(pixel_id)
         self._work_available.set()
-        logger.info("Added pixel %s to pool at (%d,%d) color %02X%02X%02X",
-                     pixel_id, x, y, r, g, b)
+        logger.info(
+            "Added pixel %s to pool at (%d,%d) color %02X%02X%02X",
+            pixel_id,
+            x,
+            y,
+            r,
+            g,
+            b,
+        )
         return entry
 
     def cancel_pixel(self, pixel_id: str) -> bool:
@@ -94,7 +105,7 @@ class MiningPool:
             entry = self._entries.get(pixel_id)
             if entry is None:
                 return False
-            entry.status = 'cancelled'
+            entry.status = "cancelled"
             entry.cancel_event.set()
             if pixel_id in self._queue:
                 self._queue.remove(pixel_id)
@@ -115,17 +126,17 @@ class MiningPool:
         with self._lock:
             entry = self._entries.get(pixel_id)
             if entry:
-                entry.status = 'confirmed'
+                entry.status = "confirmed"
 
     def requeue_all(self):
         """Requeue all non-confirmed pixels for re-mining (after a reorg)."""
         with self._lock:
             requeued = []
             for eid, entry in self._entries.items():
-                if entry.status in ('mining', 'pending'):
+                if entry.status in ("mining", "pending"):
                     entry.cancel_event.set()  # stop current mining
                     entry.cancel_event = threading.Event()  # fresh event
-                    entry.status = 'pending'
+                    entry.status = "pending"
                     if eid not in self._queue:
                         self._queue.append(eid)
                     requeued.append(eid)
@@ -139,21 +150,26 @@ class MiningPool:
         with self._lock:
             result = []
             for entry in self._entries.values():
-                if entry.status in ('pending', 'mining'):
-                    result.append({
-                        'id': entry.id,
-                        'x': entry.x,
-                        'y': entry.y,
-                        'color': f'{entry.r:02X}{entry.g:02X}{entry.b:02X}',
-                        'status': entry.status,
-                    })
+                if entry.status in ("pending", "mining"):
+                    result.append(
+                        {
+                            "id": entry.id,
+                            "x": entry.x,
+                            "y": entry.y,
+                            "color": f"{entry.r:02X}{entry.g:02X}{entry.b:02X}",
+                            "status": entry.status,
+                        }
+                    )
             return result
 
     def remove_confirmed(self):
         """Clean up confirmed/cancelled entries."""
         with self._lock:
-            to_remove = [eid for eid, e in self._entries.items()
-                         if e.status in ('confirmed', 'cancelled')]
+            to_remove = [
+                eid
+                for eid, e in self._entries.items()
+                if e.status in ("confirmed", "cancelled")
+            ]
             for eid in to_remove:
                 del self._entries[eid]
 
@@ -177,8 +193,8 @@ class MiningPool:
             while self._queue:
                 eid = self._queue.pop(0)
                 entry = self._entries.get(eid)
-                if entry and entry.status == 'pending':
-                    entry.status = 'mining'
+                if entry and entry.status == "pending":
+                    entry.status = "mining"
                     return entry
         return None
 
@@ -201,21 +217,27 @@ class MiningPool:
         )
 
         entry.pixel = pixel
-        logger.debug("Mining pixel %s at (%d,%d) epoch=%s diff=%.1f",
-                      entry.id, entry.x, entry.y, epoch, difficulty)
+        logger.debug(
+            "Mining pixel %s at (%d,%d) epoch=%s diff=%.1f",
+            entry.id,
+            entry.x,
+            entry.y,
+            epoch,
+            difficulty,
+        )
 
         success = pixel.mine(int(difficulty), cancel_event=entry.cancel_event)
 
-        if success and entry.status == 'mining':
+        if success and entry.status == "mining":
             logger.info("Mined pixel %s: hash=%s", entry.id, pixel.hash.hex()[:16])
             self._on_mined(entry)
-        elif entry.status == 'cancelled':
+        elif entry.status == "cancelled":
             logger.debug("Mining cancelled for pixel %s", entry.id)
         else:
             # Cancelled due to reorg or stop — requeue if still desired
             with self._lock:
-                if entry.status == 'mining' and not self._stop_event.is_set():
-                    entry.status = 'pending'
+                if entry.status == "mining" and not self._stop_event.is_set():
+                    entry.status = "pending"
                     entry.cancel_event = threading.Event()
                     self._queue.append(entry.id)
                     self._work_available.set()

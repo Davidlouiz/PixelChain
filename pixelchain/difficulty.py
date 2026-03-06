@@ -9,7 +9,9 @@ from .config import (
 )
 
 
-def compute_new_difficulty(prev_difficulty_bits: float, actual_duration: float) -> float:
+def compute_new_difficulty(
+    prev_difficulty_bits: float, actual_duration: float
+) -> float:
     """Compute the difficulty for the next epoch.
 
     new_difficulty = prev_difficulty × (target_time / actual_time)
@@ -52,5 +54,5 @@ def difficulty_target(difficulty_bits: float) -> int:
 def hash_meets_target(hash_bytes: bytes, difficulty_bits: float) -> bool:
     """Check whether a hash meets the given difficulty."""
     target = difficulty_target(difficulty_bits)
-    hash_int = int.from_bytes(hash_bytes, 'big')
+    hash_int = int.from_bytes(hash_bytes, "big")
     return hash_int <= target

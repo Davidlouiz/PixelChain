@@ -12,7 +12,7 @@ def epoch_to_index(epoch: str) -> int:
     """
     result = 0
     for ch in epoch:
-        result = result * 26 + (ord(ch) - ord('a') + 1)
+        result = result * 26 + (ord(ch) - ord("a") + 1)
     return result - 1
 
 
@@ -27,9 +27,9 @@ def index_to_epoch(index: int) -> str:
     chars = []
     while n > 0:
         n -= 1
-        chars.append(chr(ord('a') + (n % 26)))
+        chars.append(chr(ord("a") + (n % 26)))
         n //= 26
-    return ''.join(reversed(chars))
+    return "".join(reversed(chars))
 
 
 def next_epoch(epoch: str) -> str:

@@ -17,7 +17,7 @@ def merkle_root(leaves: List[bytes]) -> bytes:
     If the number of leaves is odd, the last leaf is duplicated.
     """
     if not leaves:
-        return _sha256(b'')
+        return _sha256(b"")
 
     layer = list(leaves)
     while len(layer) > 1:
@@ -40,6 +40,6 @@ def canvas_merkle_root(canvas: bytearray) -> bytes:
     leaves = []
     for i in range(num_pixels):
         offset = i * 3
-        pixel_bytes = canvas[offset:offset + 3]
+        pixel_bytes = canvas[offset : offset + 3]
         leaves.append(_sha256(pixel_bytes))
     return merkle_root(leaves)

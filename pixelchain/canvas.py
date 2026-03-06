@@ -16,7 +16,9 @@ class Canvas:
     def __init__(self, data: Optional[bytearray] = None):
         if data is not None:
             if len(data) != CANVAS_BYTES:
-                raise ValueError(f"Canvas data must be exactly {CANVAS_BYTES} bytes, got {len(data)}")
+                raise ValueError(
+                    f"Canvas data must be exactly {CANVAS_BYTES} bytes, got {len(data)}"
+                )
             self._data = bytearray(data)
         else:
             # initialise to black
@@ -45,10 +47,10 @@ class Canvas:
 
     def to_base64(self) -> str:
         """Serialise the full canvas to base64."""
-        return base64.b64encode(self._data).decode('ascii')
+        return base64.b64encode(self._data).decode("ascii")
 
     @classmethod
-    def from_base64(cls, b64: str) -> 'Canvas':
+    def from_base64(cls, b64: str) -> "Canvas":
         """Deserialise a canvas from base64."""
         data = bytearray(base64.b64decode(b64))
         return cls(data)
@@ -57,5 +59,5 @@ class Canvas:
     def raw(self) -> bytearray:
         return self._data
 
-    def copy(self) -> 'Canvas':
+    def copy(self) -> "Canvas":
         return Canvas(copy.copy(self._data))

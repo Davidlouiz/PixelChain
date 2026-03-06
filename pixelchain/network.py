@@ -40,7 +40,7 @@ class PeerInfo:
     ban_count: int = 0
     banned_until: float = 0.0
     last_seen: float = field(default_factory=time.time)
-    best_closure: str = ''
+    best_closure: str = ""
     best_work: int = 0
     handshake_done: bool = False
     inbound: bool = False
@@ -71,6 +71,8 @@ class P2PNetwork:
         self._message_handler: Optional[Callable] = None
         # Callback when peer count drops below minimum
         self._on_need_peers: Optional[Callable] = None
+        # Callback to get current chain state for handshake
+        self._get_handshake_info: Optional[Callable] = None
 
         self._server: Optional[asyncio.AbstractServer] = None
         self._tasks: List[asyncio.Task] = []
@@ -81,6 +83,10 @@ class P2PNetwork:
 
     def set_need_peers_handler(self, handler: Callable):
         self._on_need_peers = handler
+
+    def set_handshake_info_provider(self, provider: Callable):
+        """Set callback that returns (current_epoch, total_work) for handshake."""
+        self._get_handshake_info = provider
 
     # -------------------------------------------------------------------
     # Server lifecycle
@@ -126,7 +132,7 @@ class P2PNetwork:
         self.known_addresses.add(address)
 
         try:
-            host, port_str = address.rsplit(':', 1)
+            host, port_str = address.rsplit(":", 1)
             port = int(port_str)
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(host, port),
@@ -146,9 +152,11 @@ class P2PNetwork:
         self._tasks.append(asyncio.create_task(self._read_loop(peer)))
         return True
 
-    async def _handle_inbound(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    async def _handle_inbound(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ):
         """Handle a new inbound connection."""
-        peername = writer.get_extra_info('peername')
+        peername = writer.get_extra_info("peername")
         address = f"{peername[0]}:{peername[1]}" if peername else "unknown"
         logger.info("Inbound connection from %s", address)
 
@@ -192,19 +200,18 @@ class P2PNetwork:
 
     async def _send_handshake(self, peer: PeerInfo):
         """Send hello message to peer."""
-        # The node will fill in best_closure and best_work via the handler
+        best_closure = ""
+        best_work = 0
+        if self._get_handshake_info:
+            best_closure, best_work = self._get_handshake_info()
         msg = {
-            'type': 'hello',
-            'version': PROTOCOL_VERSION,
-            'best_closure': '',  # filled by node
-            'best_work': 0,
-            'listen_port': self.port,
+            "type": "hello",
+            "version": PROTOCOL_VERSION,
+            "best_closure": best_closure,
+            "best_work": best_work,
+            "listen_port": self.port,
         }
-        if self._message_handler:
-            # Allow the node to fill in current state
-            await self._send_message(peer, msg)
-        else:
-            await self._send_message(peer, msg)
+        await self._send_message(peer, msg)
 
     # -------------------------------------------------------------------
     # Message I/O
@@ -225,9 +232,11 @@ class P2PNetwork:
                 except (asyncio.IncompleteReadError, ConnectionError):
                     break
 
-                length = int.from_bytes(length_data, 'big')
+                length = int.from_bytes(length_data, "big")
                 if length > MAX_MESSAGE_SIZE:
-                    logger.warning("Message too large from %s: %d bytes", peer.address, length)
+                    logger.warning(
+                        "Message too large from %s: %d bytes", peer.address, length
+                    )
                     peer.consecutive_invalid += 1
                     if peer.consecutive_invalid >= MAX_CONSECUTIVE_INVALID:
                         await self._disconnect_peer(peer, ban=True)
@@ -239,11 +248,15 @@ class P2PNetwork:
                         peer.reader.readexactly(length),
                         timeout=30.0,
                     )
-                except (asyncio.IncompleteReadError, asyncio.TimeoutError, ConnectionError):
+                except (
+                    asyncio.IncompleteReadError,
+                    asyncio.TimeoutError,
+                    ConnectionError,
+                ):
                     break
 
                 try:
-                    msg = json.loads(msg_data.decode('utf-8'))
+                    msg = json.loads(msg_data.decode("utf-8"))
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     peer.consecutive_invalid += 1
                     if peer.consecutive_invalid >= MAX_CONSECUTIVE_INVALID:
@@ -258,7 +271,9 @@ class P2PNetwork:
                     try:
                         await self._message_handler(peer, msg)
                     except Exception as e:
-                        logger.error("Handler error for message from %s: %s", peer.address, e)
+                        logger.error(
+                            "Handler error for message from %s: %s", peer.address, e
+                        )
 
         except Exception as e:
             logger.debug("Read loop error for %s: %s", peer.address, e)
@@ -274,9 +289,9 @@ class P2PNetwork:
         if peer.writer is None:
             return
         try:
-            data = json.dumps(msg, separators=(',', ':')).encode('utf-8')
+            data = json.dumps(msg, separators=(",", ":")).encode("utf-8")
             length = len(data)
-            peer.writer.write(length.to_bytes(4, 'big') + data)
+            peer.writer.write(length.to_bytes(4, "big") + data)
             await peer.writer.drain()
         except Exception as e:
             logger.debug("Send error to %s: %s", peer.address, e)
@@ -285,7 +300,7 @@ class P2PNetwork:
     async def broadcast(self, msg: dict, exclude: Optional[str] = None):
         """Broadcast a message to all connected peers (gossip)."""
         # Dedup via the hash field if present
-        msg_hash = msg.get('hash', '')
+        msg_hash = msg.get("hash", "")
         if msg_hash and msg_hash in self._seen_set:
             return
         if msg_hash:
@@ -331,7 +346,7 @@ class P2PNetwork:
                 if peer.trust_score < INITIAL_TRUST_SCORE:
                     peer.trust_score = min(
                         INITIAL_TRUST_SCORE,
-                        peer.trust_score + TRUST_RECOVERY_PER_MINUTE
+                        peer.trust_score + TRUST_RECOVERY_PER_MINUTE,
                     )
 
             # Try to maintain outbound connections
@@ -339,7 +354,8 @@ class P2PNetwork:
             if outbound < self.max_outbound:
                 needed = self.max_outbound - outbound
                 candidates = [
-                    addr for addr in self.known_addresses
+                    addr
+                    for addr in self.known_addresses
                     if addr not in self.peers and not self._is_banned(addr)
                 ]
                 for addr in candidates[:needed]:

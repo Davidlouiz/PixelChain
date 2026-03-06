@@ -18,7 +18,7 @@ from .models import ClosureBlock, Pixel
 
 logger = logging.getLogger(__name__)
 
-GENESIS_CLOSURE_HASH = b'\x00' * 32  # sentinel for epoch "a"
+GENESIS_CLOSURE_HASH = b"\x00" * 32  # sentinel for epoch "a"
 
 
 @dataclass
@@ -32,7 +32,9 @@ class EpochState:
     # For each coordinate, track the current best pixel (heaviest PoW chain)
     coord_best: Dict[Tuple[int, int], Pixel] = field(default_factory=dict)
     # Per-coord cumulative work for conflict resolution
-    coord_work: Dict[Tuple[int, int], int] = field(default_factory=lambda: defaultdict(int))
+    coord_work: Dict[Tuple[int, int], int] = field(
+        default_factory=lambda: defaultdict(int)
+    )
     pixel_count: int = 0
     closure: Optional[ClosureBlock] = None
     start_time: float = field(default_factory=time.time)
@@ -49,7 +51,7 @@ class Blockchain:
         # The canvas at the tip of the dominant branch
         self.canvas = Canvas()
         # Current epoch and difficulty
-        self.current_epoch = 'a'
+        self.current_epoch = "a"
         self.current_difficulty: float = INITIAL_DIFFICULTY_BITS
         # Total cumulative work on the dominant branch
         self.total_work: int = 0
@@ -61,7 +63,7 @@ class Blockchain:
         self._on_canvas_update = None
 
         # Initialise the first epoch
-        self._init_epoch('a', GENESIS_CLOSURE_HASH, INITIAL_DIFFICULTY_BITS)
+        self._init_epoch("a", GENESIS_CLOSURE_HASH, INITIAL_DIFFICULTY_BITS)
 
     def _init_epoch(self, epoch: str, prev_closure_hash: bytes, difficulty: float):
         """Initialise a new epoch state."""
@@ -83,7 +85,9 @@ class Blockchain:
         """
         # Basic validation
         if pixel.epoch != self.current_epoch:
-            logger.debug("Pixel epoch %s != current %s", pixel.epoch, self.current_epoch)
+            logger.debug(
+                "Pixel epoch %s != current %s", pixel.epoch, self.current_epoch
+            )
             return False
 
         state = self.epoch_states.get(self.current_epoch)
@@ -230,7 +234,9 @@ class Blockchain:
 
         self._init_epoch(new_epoch, closure.hash, new_difficulty)
 
-        logger.info("Advanced to epoch %s, difficulty %.2f bits", new_epoch, new_difficulty)
+        logger.info(
+            "Advanced to epoch %s, difficulty %.2f bits", new_epoch, new_difficulty
+        )
 
         if self._on_epoch_change:
             self._on_epoch_change(new_epoch, new_difficulty)
@@ -271,11 +277,11 @@ class Blockchain:
         """Return a summary of the current blockchain state."""
         state = self.epoch_states.get(self.current_epoch)
         return {
-            'epoch': self.current_epoch,
-            'difficulty': self.current_difficulty,
-            'pixel_count': state.pixel_count if state else 0,
-            'total_work': self.total_work,
-            'num_closures': len(self.closures),
+            "epoch": self.current_epoch,
+            "difficulty": self.current_difficulty,
+            "pixel_count": state.pixel_count if state else 0,
+            "total_work": self.total_work,
+            "num_closures": len(self.closures),
         }
 
     def has_seen(self, hash_hex: str) -> bool:
@@ -316,7 +322,7 @@ class Blockchain:
     def save_state(self, data_dir: str):
         """Save the full blockchain state to disk so it can be resumed."""
         os.makedirs(data_dir, exist_ok=True)
-        chain_path = os.path.join(data_dir, 'chain.jsonl')
+        chain_path = os.path.join(data_dir, "chain.jsonl")
 
         # Collect ordered closures, then pixels per epoch
         ordered_epochs: List[str] = []
@@ -329,30 +335,37 @@ class Blockchain:
             else:
                 break
 
-        with open(chain_path, 'w') as f:
+        with open(chain_path, "w") as f:
             # Write closures and their epoch's pixels in order
             for ep in ordered_epochs:
                 closure = self.closures[ep]
                 state = self.epoch_states.get(ep)
                 if state:
                     for pixel in state.pixels.values():
-                        f.write(json.dumps(pixel.to_dict(), separators=(',', ':')) + '\n')
-                f.write(json.dumps(closure.to_dict(), separators=(',', ':')) + '\n')
+                        f.write(
+                            json.dumps(pixel.to_dict(), separators=(",", ":")) + "\n"
+                        )
+                f.write(json.dumps(closure.to_dict(), separators=(",", ":")) + "\n")
 
             # Write current (open) epoch pixels
             state = self.epoch_states.get(self.current_epoch)
             if state:
                 for pixel in state.pixels.values():
-                    f.write(json.dumps(pixel.to_dict(), separators=(',', ':')) + '\n')
+                    f.write(json.dumps(pixel.to_dict(), separators=(",", ":")) + "\n")
 
-        logger.info("Saved state to %s (%d closures, epoch %s with %d pixels)",
-                     chain_path, len(ordered_epochs), self.current_epoch,
-                     self.epoch_states[self.current_epoch].pixel_count
-                     if self.current_epoch in self.epoch_states else 0)
+        logger.info(
+            "Saved state to %s (%d closures, epoch %s with %d pixels)",
+            chain_path,
+            len(ordered_epochs),
+            self.current_epoch,
+            self.epoch_states[self.current_epoch].pixel_count
+            if self.current_epoch in self.epoch_states
+            else 0,
+        )
 
     def load_state(self, data_dir: str) -> bool:
         """Load blockchain state from disk.  Returns True if state was loaded."""
-        chain_path = os.path.join(data_dir, 'chain.jsonl')
+        chain_path = os.path.join(data_dir, "chain.jsonl")
         if not os.path.exists(chain_path):
             return False
 
@@ -368,30 +381,40 @@ class Blockchain:
         self._on_pixel_confirmed = None
 
         try:
-            with open(chain_path, 'r') as f:
+            with open(chain_path, "r") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
                         continue
                     d = json.loads(line)
-                    if d.get('type') == 'pixel':
+                    if d.get("type") == "pixel":
                         pixel = Pixel.from_dict(d)
                         if self.accept_pixel(pixel):
                             pixels_loaded += 1
                         else:
-                            logger.warning("Failed to replay pixel %s", d.get('hash', '?')[:16])
-                    elif d.get('type') == 'closure':
+                            logger.warning(
+                                "Failed to replay pixel %s", d.get("hash", "?")[:16]
+                            )
+                    elif d.get("type") == "closure":
                         closure = ClosureBlock.from_dict(d)
                         if self.accept_closure(closure):
                             closures_loaded += 1
                         else:
-                            logger.warning("Failed to replay closure for epoch %s", d.get('epoch', '?'))
+                            logger.warning(
+                                "Failed to replay closure for epoch %s",
+                                d.get("epoch", "?"),
+                            )
         finally:
             # Restore callbacks
             self._on_canvas_update = old_cu
             self._on_epoch_change = old_ec
             self._on_pixel_confirmed = old_pc
 
-        logger.info("Loaded state: %d pixels, %d closures → epoch %s (difficulty %.2f)",
-                     pixels_loaded, closures_loaded, self.current_epoch, self.current_difficulty)
+        logger.info(
+            "Loaded state: %d pixels, %d closures → epoch %s (difficulty %.2f)",
+            pixels_loaded,
+            closures_loaded,
+            self.current_epoch,
+            self.current_difficulty,
+        )
         return pixels_loaded > 0 or closures_loaded > 0

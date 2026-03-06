@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-STATIC_DIR = Path(__file__).parent / 'static'
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _serve_static(connection, request: Request) -> Response | None:
@@ -31,10 +31,10 @@ def _serve_static(connection, request: Request) -> Response | None:
 
     # Serve static files
     path = request.path
-    if path == '/':
-        path = '/index.html'
+    if path == "/":
+        path = "/index.html"
 
-    file_path = STATIC_DIR / path.lstrip('/')
+    file_path = STATIC_DIR / path.lstrip("/")
     # Security: prevent path traversal
     try:
         file_path = file_path.resolve()
@@ -46,13 +46,15 @@ def _serve_static(connection, request: Request) -> Response | None:
     if file_path.is_file():
         content_type, _ = mimetypes.guess_type(str(file_path))
         if content_type is None:
-            content_type = 'application/octet-stream'
+            content_type = "application/octet-stream"
         body = file_path.read_bytes()
-        headers = Headers({
-            'Content-Type': content_type,
-            'Content-Length': str(len(body)),
-            'Cache-Control': 'no-cache',
-        })
+        headers = Headers(
+            {
+                "Content-Type": content_type,
+                "Content-Length": str(len(body)),
+                "Cache-Control": "no-cache",
+            }
+        )
         return Response(200, "OK", headers, body)
     else:
         return Response(404, "Not Found", Headers(), b"Not Found")
@@ -61,7 +63,7 @@ def _serve_static(connection, request: Request) -> Response | None:
 class WebSocketServer:
     """Combined WebSocket + HTTP server that serves the frontend and bridges the Node."""
 
-    def __init__(self, node: 'Node', host: str = '0.0.0.0', port: int = 8080):
+    def __init__(self, node: "Node", host: str = "0.0.0.0", port: int = 8080):
         self.node = node
         self.host = host
         self.port = port
@@ -76,7 +78,9 @@ class WebSocketServer:
             process_request=_serve_static,
             max_size=16 * 1024 * 1024,  # 16 MB — canvas_init is ~4 MB
         )
-        logger.info("Server listening on http://%s:%d (WS + HTTP)", self.host, self.port)
+        logger.info(
+            "Server listening on http://%s:%d (WS + HTTP)", self.host, self.port
+        )
 
     async def stop(self):
         """Stop the server."""
