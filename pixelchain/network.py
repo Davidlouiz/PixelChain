@@ -71,6 +71,8 @@ class P2PNetwork:
         self._message_handler: Optional[Callable] = None
         # Callback when peer count drops below minimum
         self._on_need_peers: Optional[Callable] = None
+        # Callback when peer count changes
+        self._on_peer_change: Optional[Callable] = None
         # Callback to get current chain state for handshake
         self._get_handshake_info: Optional[Callable] = None
 
@@ -83,6 +85,10 @@ class P2PNetwork:
 
     def set_need_peers_handler(self, handler: Callable):
         self._on_need_peers = handler
+
+    def set_peer_change_handler(self, handler: Callable):
+        """Set callback invoked (with peer_count: int) when a peer connects or disconnects."""
+        self._on_peer_change = handler
 
     def set_handshake_info_provider(self, provider: Callable):
         """Set callback that returns (current_epoch, total_work) for handshake."""
@@ -145,6 +151,8 @@ class P2PNetwork:
         peer = PeerInfo(address=address, reader=reader, writer=writer, inbound=False)
         self.peers[address] = peer
         logger.info("Connected to peer %s", address)
+        if self._on_peer_change:
+            self._on_peer_change(len(self.peers))
 
         # Send handshake
         await self._send_handshake(peer)
@@ -167,6 +175,8 @@ class P2PNetwork:
         peer = PeerInfo(address=address, reader=reader, writer=writer, inbound=True)
         self.peers[address] = peer
         self.known_addresses.add(address)
+        if self._on_peer_change:
+            self._on_peer_change(len(self.peers))
 
         await self._send_handshake(peer)
         await self._read_loop(peer)
@@ -181,6 +191,8 @@ class P2PNetwork:
             except Exception:
                 pass
         self.peers.pop(address, None)
+        if self._on_peer_change:
+            self._on_peer_change(len(self.peers))
         if ban:
             dur = BAN_DURATIONS[min(peer.ban_count, len(BAN_DURATIONS) - 1)]
             peer.banned_until = time.time() + dur

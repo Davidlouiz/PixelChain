@@ -336,6 +336,7 @@
                 <span class="connection-dot" id="conn-dot"></span>
                 <span id="conn-status">Disconnected</span>
             </div>
+            <div>Peers: <span class="val" id="peer-count">0</span></div>
             <div>Epoch: <span class="val" id="epoch-val">a</span></div>
             <div>Difficulty: <span class="val" id="diff-val">1</span></div>
             <div>Pixels: <span class="val" id="pixel-count">0</span></div>
@@ -403,6 +404,7 @@
             const connStatus = document.getElementById('conn-status');
             const epochVal = document.getElementById('epoch-val');
             const diffVal = document.getElementById('diff-val');
+            const peerCount = document.getElementById('peer-count');
             const pixelCount = document.getElementById('pixel-count');
             const colorPicker = document.getElementById('color-picker');
             const colorHex = document.getElementById('color-hex');
@@ -729,6 +731,7 @@
                     case 'epoch_update': {
                         epochVal.textContent = msg.epoch;
                         diffVal.textContent = typeof msg.difficulty === 'number' ? msg.difficulty.toFixed(1) : msg.difficulty;
+                        if (msg.peers !== undefined) peerCount.textContent = msg.peers;
                         break;
                     }
                 }

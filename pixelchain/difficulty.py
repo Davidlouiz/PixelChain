@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from .config import (
     INITIAL_DIFFICULTY_BITS,
     MAX_DIFFICULTY_ADJUSTMENT,
@@ -14,20 +16,24 @@ def compute_new_difficulty(
 ) -> float:
     """Compute the difficulty for the next epoch.
 
-    new_difficulty = prev_difficulty × (target_time / actual_time)
-    Clamped to [prev / 4, prev × 4].
+    new_bits = prev_bits + log2(target_time / actual_time)
 
-    We use a float to represent fractional difficulty bits for smoother adjustment.
-    The actual target is derived from the float at verification time.
+    Since difficulty_bits represents a *logarithmic* measure of work (work = 2^bits),
+    we must ADD log2(ratio) rather than multiply.  Adding log2(4) = 2 bits doubles
+    the exponent, which corresponds to exactly 4× more work.
+
+    The adjustment is clamped to ±log2(MAX_DIFFICULTY_ADJUSTMENT) bits per epoch.
     """
     if actual_duration <= 0:
         actual_duration = 1.0  # safety
 
     ratio = TARGET_EPOCH_DURATION / actual_duration
-    # Clamp ratio to [1/4, 4]
+    # Clamp ratio to [1/MAX, MAX] (e.g. [1/4, 4])
     ratio = max(1.0 / MAX_DIFFICULTY_ADJUSTMENT, min(MAX_DIFFICULTY_ADJUSTMENT, ratio))
 
-    new_diff = prev_difficulty_bits * ratio
+    # Convert multiplicative work ratio to additive bits adjustment
+    adjustment = math.log2(ratio)
+    new_diff = prev_difficulty_bits + adjustment
     # Ensure minimum difficulty
     if new_diff < INITIAL_DIFFICULTY_BITS:
         new_diff = INITIAL_DIFFICULTY_BITS

@@ -244,8 +244,13 @@ class Blockchain:
     # Closure block acceptance
     # -------------------------------------------------------------------
 
-    def accept_closure(self, closure: ClosureBlock) -> bool:
-        """Validate and accept a closure block."""
+    def accept_closure(self, closure: ClosureBlock, *, sync_mode: bool = False) -> bool:
+        """Validate and accept a closure block.
+
+        When *sync_mode* is True, the pixel-count and Merkle-root checks are
+        skipped.  This is used during initial chain download where the canvas
+        is transferred separately.
+        """
         state = self.epoch_states.get(closure.epoch)
         if state is None:
             return False
@@ -268,16 +273,28 @@ class Blockchain:
             logger.debug("Closure hash verification failed")
             return False
 
-        # Check that epoch has enough pixels (closure is the 65536th item)
-        if state.pixel_count < PIXELS_PER_EPOCH - 1:
-            logger.debug("Not enough pixels for closure: %d", state.pixel_count)
-            return False
+        if not sync_mode:
+            # Check that epoch has enough pixels (closure is the last item)
+            if state.pixel_count < PIXELS_PER_EPOCH - 1:
+                logger.debug("Not enough pixels for closure: %d", state.pixel_count)
+                return False
 
-        # Verify Merkle root matches current canvas state
-        expected_merkle = self.canvas.merkle_root()
-        if closure.merkle_root != expected_merkle:
-            logger.debug("Merkle root mismatch")
-            return False
+            # Verify pixel_hashes match our winning pixels
+            if closure.pixel_hashes:
+                expected_hashes = self.get_epoch_pixel_hashes(closure.epoch)
+                if sorted(closure.pixel_hashes) != expected_hashes:
+                    logger.debug(
+                        "Pixel hashes mismatch: closure has %d, we have %d",
+                        len(closure.pixel_hashes),
+                        len(expected_hashes),
+                    )
+                    return False
+
+            # Verify Merkle root matches current canvas state
+            expected_merkle = self.canvas.merkle_root()
+            if closure.merkle_root != expected_merkle:
+                logger.debug("Merkle root mismatch")
+                return False
 
         # Accept
         state.closure = closure
@@ -377,6 +394,17 @@ class Blockchain:
         if state is None:
             return []
         return list(state.pixels.values())
+
+    def get_epoch_pixel_hashes(self, epoch: str) -> List[str]:
+        """Return sorted list of winning pixel hex-hashes for the epoch.
+
+        These are the hashes of the *coord_best* pixels — one per coordinate
+        that was modified during the epoch.
+        """
+        state = self.epoch_states.get(epoch)
+        if state is None:
+            return []
+        return sorted(p.hash.hex() for p in state.coord_best.values())
 
     def get_missing_pixels(self, epoch: str, known_hashes: List[str]) -> List[Pixel]:
         """Return pixels in the epoch that are not in known_hashes."""

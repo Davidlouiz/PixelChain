@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import struct
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import List, Optional
 
 
 def _sha256(data: bytes) -> bytes:
@@ -165,6 +165,9 @@ class ClosureBlock:
     prev_closure_hash: bytes  # 32 bytes (zero-bytes for epoch "a")
     merkle_root: bytes  # 32 bytes — Merkle root of the full canvas state
     total_work: int  # cumulative work since genesis
+    pixel_hashes: List[str] = field(
+        default_factory=list
+    )  # sorted hex hashes of winning pixels
     nonce: int = 0
     hash: bytes = field(default=b"\x00" * 32, repr=False)
     timestamp: float = (
@@ -179,8 +182,11 @@ class ClosureBlock:
             epoch_bytes,
             self.merkle_root,  # 32 bytes
             struct.pack(">Q", self.total_work),  # 8 bytes
-            struct.pack(">I", self.nonce),  # 4 bytes
+            struct.pack(">I", len(self.pixel_hashes)),  # 4 bytes: count
         ]
+        for h in self.pixel_hashes:
+            parts.append(bytes.fromhex(h))  # 32 bytes each
+        parts.append(struct.pack(">I", self.nonce))  # 4 bytes
         return b"".join(parts)
 
     def compute_hash(self) -> bytes:
@@ -215,6 +221,7 @@ class ClosureBlock:
             "prev_closure_hash": self.prev_closure_hash.hex(),
             "merkle_root": self.merkle_root.hex(),
             "total_work": self.total_work,
+            "pixel_hashes": self.pixel_hashes,
             "nonce": self.nonce,
             "hash": self.hash.hex(),
             "timestamp": self.timestamp,
@@ -227,6 +234,7 @@ class ClosureBlock:
             prev_closure_hash=bytes.fromhex(d["prev_closure_hash"]),
             merkle_root=bytes.fromhex(d["merkle_root"]),
             total_work=d["total_work"],
+            pixel_hashes=d.get("pixel_hashes", []),
             nonce=d["nonce"],
             hash=bytes.fromhex(d["hash"]),
             timestamp=d.get("timestamp", 0.0),

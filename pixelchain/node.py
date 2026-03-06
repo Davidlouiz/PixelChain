@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from typing import Dict, List, Optional, Set
 
@@ -54,6 +55,16 @@ class Node:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._save_handle = None  # debounced save timer
 
+        # Closure mining state
+        self._closure_cancel_event: Optional[threading.Event] = None
+        self._closure_thread: Optional[threading.Thread] = None
+        self._closure_mining_epoch: Optional[str] = None  # epoch being mined
+
+        # Pending closures: when a gossiped closure can't be accepted yet
+        # (missing pixels / Merkle mismatch), we buffer it and retry as
+        # pixels arrive.  Key = epoch name, value = (ClosureBlock, raw msg dict, peer address)
+        self._pending_closures: Dict[str, tuple] = {}
+
         # Set up callbacks
         self.blockchain._on_canvas_update = self._notify_canvas_update
         self.blockchain._on_epoch_change = self._notify_epoch_change
@@ -62,6 +73,7 @@ class Node:
         self.network.set_message_handler(self._handle_peer_message)
         self.network.set_need_peers_handler(self._discover_peers)
         self.network.set_handshake_info_provider(self._get_handshake_info)
+        self.network.set_peer_change_handler(self._notify_peer_count)
 
     def _get_handshake_info(self):
         """Return (current_epoch, total_work) for P2P handshake."""
@@ -86,6 +98,9 @@ class Node:
         await self.network.start()
         self.pool.start()
 
+        # Check if epoch closure is needed (e.g. after loading saved state)
+        self._check_epoch_closure()
+
         # Bootstrap: connect to initial peers
         for addr in self.config.bootstrap_peers:
             asyncio.create_task(self.network.connect_to_peer(addr))
@@ -98,6 +113,7 @@ class Node:
 
     async def stop(self):
         """Stop the node."""
+        self._cancel_closure_mining()
         self.pool.stop()
         await self.network.stop()
         # Save state on clean shutdown
@@ -180,6 +196,16 @@ class Node:
         If this pixel lost, its colour was already superseded by a newer
         pool entry at the same coord (which will chain on top and win).
         """
+        # If the entry was already requeued (e.g. by requeue_all during epoch
+        # change) while the mined callback was in flight, don't touch it.
+        if entry.status != "mining":
+            logger.debug(
+                "Local pixel %s already requeued (status=%s), skipping",
+                pool_id,
+                entry.status,
+            )
+            return
+
         accepted = self.blockchain.accept_pixel(pixel)
         if accepted:
             hash_hex = pixel.hash.hex()
@@ -190,11 +216,34 @@ class Node:
             await self._ws_broadcast({"type": "pool_confirmed", "id": pool_id})
             await self.network.broadcast(pixel.to_dict())
         else:
-            # Pixel rejected (e.g. epoch changed, duplicate).  Just drop it;
-            # the pool's coord dedup ensures only the latest attempt matters.
-            entry.status = "confirmed"  # remove from pool
-            logger.debug("Local pixel %s rejected, dropping", pool_id)
-            await self._ws_broadcast({"type": "pool_confirmed", "id": pool_id})
+            # Pixel rejected — likely epoch changed or epoch full.
+            # If the pixel was mined for a stale epoch, requeue it so it
+            # gets re-mined with the correct epoch/closure_hash.
+            epoch_changed = pixel.epoch != self.blockchain.current_epoch
+            epoch_full = False
+            if not epoch_changed:
+                state = self.blockchain.epoch_states.get(self.blockchain.current_epoch)
+                if state and state.pixel_count >= PIXELS_PER_EPOCH - 1:
+                    epoch_full = True
+
+            if epoch_changed or epoch_full:
+                logger.info(
+                    "Local pixel %s rejected (%s), requeuing",
+                    pool_id,
+                    "epoch changed" if epoch_changed else "epoch full",
+                )
+                entry.status = "pending"
+                entry.cancel_event = threading.Event()
+                entry.pixel = None
+                with self.pool._lock:
+                    if entry.id not in self.pool._queue:
+                        self.pool._queue.append(entry.id)
+                self.pool._work_available.set()
+            else:
+                # Truly rejected (duplicate, invalid, etc.) — drop it.
+                entry.status = "confirmed"
+                logger.debug("Local pixel %s rejected, dropping", pool_id)
+                await self._ws_broadcast({"type": "pool_confirmed", "id": pool_id})
 
     def _on_blockchain_pixel_confirmed(self, pixel: Pixel):
         """Called when any pixel is confirmed on the blockchain."""
@@ -205,6 +254,123 @@ class Node:
                 self.pool.confirm_pixel(pool_id)
         # Schedule periodic save
         self._schedule_save()
+        # Try to apply any pending closure (pixels may have been missing)
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(
+                lambda: self._loop.create_task(self._try_pending_closure())
+            )
+        # Check if epoch is ready for closure
+        self._check_epoch_closure()
+
+    # -------------------------------------------------------------------
+    # Closure block mining
+    # -------------------------------------------------------------------
+
+    def _check_epoch_closure(self):
+        """Check if the current epoch has enough pixels to mine a closure block."""
+        state = self.blockchain.epoch_states.get(self.blockchain.current_epoch)
+        if state is None:
+            return
+        if state.closure is not None:
+            return  # already closed
+        if state.pixel_count < PIXELS_PER_EPOCH - 1:
+            return  # not enough pixels yet
+        # Already mining closure for this epoch?
+        if self._closure_mining_epoch == self.blockchain.current_epoch:
+            return
+
+        logger.info(
+            "Epoch %s has %d/%d pixels — starting closure mining",
+            self.blockchain.current_epoch,
+            state.pixel_count,
+            PIXELS_PER_EPOCH,
+        )
+        self._start_closure_mining()
+
+    def _start_closure_mining(self):
+        """Start mining a closure block in a background thread."""
+        # Cancel any previous closure mining
+        self._cancel_closure_mining()
+
+        epoch = self.blockchain.current_epoch
+        state = self.blockchain.epoch_states.get(epoch)
+        if state is None:
+            return
+
+        self._closure_cancel_event = threading.Event()
+        self._closure_mining_epoch = epoch
+
+        # Build the closure block
+        closure = ClosureBlock(
+            epoch=epoch,
+            prev_closure_hash=state.closure_hash,
+            merkle_root=self.blockchain.canvas.merkle_root(),
+            total_work=self.blockchain.total_work,
+            pixel_hashes=self.blockchain.get_epoch_pixel_hashes(epoch),
+        )
+
+        difficulty = int(state.difficulty)
+        cancel_event = self._closure_cancel_event
+
+        def mine_closure():
+            logger.info(
+                "Mining closure block for epoch %s (difficulty %d bits)",
+                epoch,
+                difficulty,
+            )
+            success = closure.mine(difficulty, cancel_event=cancel_event)
+            if success and not cancel_event.is_set():
+                closure.timestamp = time.time()
+                logger.info(
+                    "Closure block mined for epoch %s: hash=%s",
+                    epoch,
+                    closure.hash.hex()[:16],
+                )
+                # Schedule acceptance on the event loop
+                self._loop.call_soon_threadsafe(
+                    lambda c=closure: self._loop.create_task(
+                        self._on_closure_mined_on_loop(c)
+                    )
+                )
+            else:
+                logger.debug("Closure mining cancelled for epoch %s", epoch)
+
+        self._closure_thread = threading.Thread(
+            target=mine_closure, name=f"closure-miner-{epoch}", daemon=True
+        )
+        self._closure_thread.start()
+
+    def _cancel_closure_mining(self):
+        """Cancel any in-progress closure mining."""
+        if self._closure_cancel_event is not None:
+            self._closure_cancel_event.set()
+            self._closure_cancel_event = None
+        self._closure_mining_epoch = None
+        # Don't join — the thread is a daemon and will exit on its own
+        self._closure_thread = None
+
+    async def _on_closure_mined_on_loop(self, closure: ClosureBlock):
+        """Process a locally mined closure block on the event loop."""
+        accepted = self.blockchain.accept_closure(closure)
+        if accepted:
+            logger.info(
+                "Local closure for epoch %s accepted — advancing to %s",
+                closure.epoch,
+                self.blockchain.current_epoch,
+            )
+            self._closure_mining_epoch = None
+            # Requeue pool pixels for new epoch
+            requeued = self.pool.requeue_all()
+            for rid in requeued:
+                await self._ws_broadcast({"type": "pool_requeued", "id": rid})
+            # Broadcast closure to peers
+            await self.network.broadcast(closure.to_dict())
+            # Save state
+            self._schedule_save()
+        else:
+            logger.warning(
+                "Local closure for epoch %s rejected (stale?)", closure.epoch
+            )
 
     # -------------------------------------------------------------------
     # P2P message handling
@@ -270,15 +436,20 @@ class Node:
                 "from_epoch": "a",
             },
         )
-        # Request current epoch pixels from peer
-        peer_epoch = peer.best_closure if peer.best_closure else "a"
-        await self.network.send_to_peer(
-            peer.address,
-            {
-                "type": "get_epoch_pixels",
-                "epoch": peer_epoch,
-            },
-        )
+
+        # If we already have closures (i.e. we're not behind),
+        # also request current epoch pixels immediately.
+        # Otherwise, _handle_closures will request canvas + pixels
+        # after catching up.
+        if peer.best_work <= my_work:
+            peer_epoch = peer.best_closure if peer.best_closure else "a"
+            await self.network.send_to_peer(
+                peer.address,
+                {
+                    "type": "get_epoch_pixels",
+                    "epoch": peer_epoch,
+                },
+            )
 
         # Store listen_port if present for peer discovery
         listen_port = msg.get("listen_port")
@@ -326,14 +497,91 @@ class Node:
 
         accepted = self.blockchain.accept_closure(closure)
         if accepted:
-            # Requeue pool pixels for new epoch
-            requeued = self.pool.requeue_all()
-            for rid in requeued:
-                await self._ws_broadcast({"type": "pool_requeued", "id": rid})
-            # Relay
-            await self.network.broadcast(msg, exclude=peer.address)
+            await self._on_closure_accepted(closure, msg, peer.address)
         else:
-            peer.trust_score -= 1
+            # Buffer the closure — pixels may still be in flight.
+            # Only buffer for the current epoch (don't buffer stale ones).
+            if closure.epoch == self.blockchain.current_epoch:
+                # Use pixel_hashes to identify exactly what we're missing
+                state = self.blockchain.epoch_states.get(closure.epoch)
+                missing = []
+                if state and closure.pixel_hashes:
+                    missing = [h for h in closure.pixel_hashes if h not in state.pixels]
+                logger.info(
+                    "Buffering closure for epoch %s from %s "
+                    "(%d/%d winning pixels missing, %d epoch pixels so far)",
+                    closure.epoch,
+                    peer.address,
+                    len(missing),
+                    len(closure.pixel_hashes),
+                    state.pixel_count if state else 0,
+                )
+                self._pending_closures[closure.epoch] = (closure, msg, peer.address)
+                # Request all epoch pixels (includes missing winners + their parents)
+                await self.network.send_to_peer(
+                    peer.address,
+                    {
+                        "type": "get_epoch_pixels",
+                        "epoch": closure.epoch,
+                    },
+                )
+            else:
+                logger.debug(
+                    "Rejected closure for epoch %s (current=%s)",
+                    closure.epoch,
+                    self.blockchain.current_epoch,
+                )
+
+    async def _on_closure_accepted(
+        self, closure: ClosureBlock, msg: dict, exclude_addr: str
+    ):
+        """Common logic after a closure is successfully accepted."""
+        # Cancel our own closure mining if we were mining for this epoch
+        if self._closure_mining_epoch == closure.epoch:
+            logger.info(
+                "Peer closure for epoch %s accepted — cancelling local mining",
+                closure.epoch,
+            )
+            self._cancel_closure_mining()
+        # Remove from pending buffer
+        self._pending_closures.pop(closure.epoch, None)
+        # Requeue pool pixels for new epoch
+        requeued = self.pool.requeue_all()
+        for rid in requeued:
+            await self._ws_broadcast({"type": "pool_requeued", "id": rid})
+        # Relay
+        await self.network.broadcast(msg, exclude=exclude_addr)
+        # Save state
+        self._schedule_save()
+
+    async def _try_pending_closure(self):
+        """Try to apply a pending closure after a new pixel was accepted.
+
+        Uses the closure's *pixel_hashes* for a fast completeness check:
+        we only call the (expensive) accept_closure when all winning pixels
+        are present AND the epoch has enough total pixels.
+        """
+        epoch = self.blockchain.current_epoch
+        pending = self._pending_closures.get(epoch)
+        if not pending:
+            return
+
+        closure, msg, peer_addr = pending
+
+        # Fast check: do we have all winning pixels?
+        if closure.pixel_hashes:
+            state = self.blockchain.epoch_states.get(epoch)
+            if state:
+                if state.pixel_count < PIXELS_PER_EPOCH - 1:
+                    return  # not enough pixels yet
+                for h in closure.pixel_hashes:
+                    if h not in state.pixels:
+                        return  # still missing at least one winning pixel
+
+        accepted = self.blockchain.accept_closure(closure)
+        if accepted:
+            logger.info("Pending closure for epoch %s now accepted!", closure.epoch)
+            await self._on_closure_accepted(closure, msg, peer_addr)
 
     async def _handle_get_closures(self, peer: PeerInfo, msg: dict):
         """Handle a request for closure blocks."""
@@ -348,17 +596,40 @@ class Node:
         )
 
     async def _handle_closures(self, peer: PeerInfo, msg: dict):
-        """Handle received closure blocks (sync response)."""
+        """Handle received closure blocks (sync response).
+
+        Closures are accepted in *sync_mode* (skipping pixel-count and
+        Merkle-root checks) because the canvas hasn't been downloaded yet.
+        After accepting, we request the canvas and current-epoch pixels.
+        """
         closures_data = msg.get("closures", [])
+        accepted = 0
         for cd in closures_data:
             try:
                 closure = ClosureBlock.from_dict(cd)
-                # For sync, we accept closures more leniently
-                # In full implementation, we'd verify the entire chain
                 if closure.epoch not in self.blockchain.closures:
-                    self.blockchain.accept_closure(closure)
+                    if self.blockchain.accept_closure(closure, sync_mode=True):
+                        accepted += 1
             except Exception as e:
                 logger.debug("Invalid closure in sync: %s", e)
+
+        if accepted:
+            logger.info(
+                "Sync: accepted %d closures from %s, now on epoch %s",
+                accepted,
+                peer.address,
+                self.blockchain.current_epoch,
+            )
+            # Download the canvas that corresponds to the tip of the chain
+            await self.network.send_to_peer(peer.address, {"type": "get_canvas"})
+            # Then request current-epoch pixels
+            await self.network.send_to_peer(
+                peer.address,
+                {
+                    "type": "get_epoch_pixels",
+                    "epoch": self.blockchain.current_epoch,
+                },
+            )
 
     async def _handle_get_canvas(self, peer: PeerInfo, msg: dict):
         """Handle a canvas download request."""
@@ -377,10 +648,14 @@ class Node:
 
         try:
             canvas = Canvas.from_base64(msg.get("pixels", ""))
-            # Verify Merkle root against last known closure
-            # For now, accept if we're bootstrapping
             self.blockchain.canvas = canvas
             logger.info("Canvas loaded from peer %s", peer.address)
+            # Notify WS clients about the new canvas
+            await self._ws_broadcast(
+                {"type": "canvas_init", "canvas": self.blockchain.canvas.to_list()}
+            )
+            # Check if we need to mine a closure for the current epoch
+            self._check_epoch_closure()
         except Exception as e:
             logger.debug("Invalid canvas from %s: %s", peer.address, e)
 
@@ -400,12 +675,18 @@ class Node:
     async def _handle_epoch_pixels(self, peer: PeerInfo, msg: dict):
         """Handle received epoch pixels (sync)."""
         pixels_data = msg.get("pixels", [])
+        accepted = 0
         for pd in pixels_data:
             try:
                 pixel = Pixel.from_dict(pd)
-                self.blockchain.accept_pixel(pixel)
+                if self.blockchain.accept_pixel(pixel):
+                    accepted += 1
             except Exception as e:
                 logger.debug("Invalid pixel in epoch sync: %s", e)
+        if accepted:
+            logger.info("Epoch pixel sync: accepted %d pixels", accepted)
+            # Some of these pixels may unblock a pending closure
+            await self._try_pending_closure()
 
     async def _handle_get_epoch_sync(self, peer: PeerInfo, msg: dict):
         """Handle sync request — send pixels not in known_hashes."""
@@ -555,6 +836,7 @@ class Node:
                     "type": "epoch_update",
                     "epoch": state["epoch"],
                     "difficulty": state["difficulty"],
+                    "peers": len(self.network.peers),
                 }
             )
         )
@@ -588,6 +870,24 @@ class Node:
                             "type": "epoch_update",
                             "epoch": epoch,
                             "difficulty": difficulty,
+                            "peers": len(self.network.peers),
+                        }
+                    )
+                )
+            )
+
+    def _notify_peer_count(self, count: int):
+        """Called by the network layer when a peer connects or disconnects."""
+        if self._loop is not None:
+            state = self.blockchain.get_current_state()
+            self._loop.call_soon_threadsafe(
+                lambda: self._loop.create_task(
+                    self._ws_broadcast(
+                        {
+                            "type": "epoch_update",
+                            "epoch": state["epoch"],
+                            "difficulty": state["difficulty"],
+                            "peers": count,
                         }
                     )
                 )
