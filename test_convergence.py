@@ -156,6 +156,103 @@ def test_realistic_conflict():
     print(f"  ✓ Realistic conflict: all 120 permutations → {ref_color}")
 
 
+def test_orphan_child_before_parent():
+    """Child pixel arrives before its parent → buffered as orphan, then released."""
+    p1 = make_pixel(20, 20, 255, 0, 0)                    # parent (no prev)
+    p2 = make_pixel(20, 20, 0, 255, 0, prev_hash=p1.hash) # child
+
+    bc = Blockchain()
+
+    # Child first — should be buffered
+    assert bc.accept_pixel(p2) is True, "Child should be accepted (buffered)"
+    assert p2.hash.hex() in bc._seen_hashes, "Child should be in seen_hashes"
+    assert bc._orphan_count == 1, "Should have 1 orphan"
+    # Canvas should NOT show the child yet
+    assert bc.canvas.get_pixel(20, 20) == (0, 0, 0), "Canvas should still be black"
+
+    # Parent arrives — should release child
+    assert bc.accept_pixel(p1) is True, "Parent should be accepted"
+    assert bc._orphan_count == 0, "Orphan buffer should be empty"
+    # Both pixels applied — winner is highest individual work
+    state = bc.epoch_states["a"]
+    assert state.pixel_count == 2, f"Expected 2 pixels, got {state.pixel_count}"
+    print(f"  ✓ Child buffered then released, canvas = {bc.canvas.get_pixel(20, 20)}")
+
+
+def test_orphan_cascade():
+    """A→B→C chain: C arrives first, then B, then A — all released in cascade."""
+    pA = make_pixel(30, 30, 255, 0, 0)                      # root
+    pB = make_pixel(30, 30, 0, 255, 0, prev_hash=pA.hash, nonce_start=1000000)
+    pC = make_pixel(30, 30, 0, 0, 255, prev_hash=pB.hash, nonce_start=2000000)
+
+    bc = Blockchain()
+
+    # C first → orphan (waiting for B)
+    assert bc.accept_pixel(pC) is True
+    assert bc._orphan_count == 1
+
+    # B next → orphan (waiting for A), but C is still waiting for B
+    assert bc.accept_pixel(pB) is True
+    assert bc._orphan_count == 2
+
+    # A arrives → accepts A, releases B (whose parent A is now known),
+    #             then releases C (whose parent B is now known)
+    assert bc.accept_pixel(pA) is True
+    assert bc._orphan_count == 0, f"Expected 0 orphans, got {bc._orphan_count}"
+    state = bc.epoch_states["a"]
+    assert state.pixel_count == 3, f"Expected 3 pixels, got {state.pixel_count}"
+    print(f"  ✓ Cascade A→B→C released correctly, pixel_count = {state.pixel_count}")
+
+
+def test_invalid_prev_pixel_hash():
+    """Pixel with a fabricated prev_pixel_hash should stay in orphan buffer forever."""
+    fake_parent = b"\xde\xad\xbe\xef" * 8  # 32 bytes of garbage
+    p_bad = make_pixel(40, 40, 255, 0, 0, prev_hash=fake_parent)
+
+    bc = Blockchain()
+    assert bc.accept_pixel(p_bad) is True, "Accepted into orphan buffer"
+    assert bc._orphan_count == 1
+
+    # It's in seen_hashes (won't be re-buffered) but NOT in state.pixels
+    state = bc.epoch_states["a"]
+    assert state.pixel_count == 0, "Should NOT be applied to state"
+    assert bc.canvas.get_pixel(40, 40) == (0, 0, 0), "Should NOT affect canvas"
+
+    # Add a legitimate pixel — orphan stays
+    p_good = make_pixel(40, 40, 0, 255, 0, nonce_start=5000000)
+    bc.accept_pixel(p_good)
+    assert bc._orphan_count == 1, "Orphan still waiting"
+    assert state.pixel_count == 1, "Only good pixel applied"
+    print(f"  ✓ Fake prev_pixel_hash stays buffered, never applied")
+
+
+def test_orphan_buffer_limit():
+    """When orphan buffer is full, new orphans are rejected."""
+    bc = Blockchain()
+
+    # Temporarily lower the limit
+    old_max = Blockchain._MAX_ORPHANS
+    Blockchain._MAX_ORPHANS = 5
+
+    try:
+        fake_parent = b"\x01" * 32
+        orphans = []
+        for i in range(7):
+            p = make_pixel(50 + i, 50, 255, 0, 0, prev_hash=fake_parent,
+                           nonce_start=i * 1000000)
+            orphans.append(p)
+
+        results = [bc.accept_pixel(p) for p in orphans]
+        accepted = sum(results)
+        rejected = len(results) - accepted
+        assert accepted == 5, f"Expected 5 accepted, got {accepted}"
+        assert rejected == 2, f"Expected 2 rejected, got {rejected}"
+        assert bc._orphan_count == 5
+        print(f"  ✓ Buffer limit enforced: {accepted} accepted, {rejected} rejected")
+    finally:
+        Blockchain._MAX_ORPHANS = old_max
+
+
 if __name__ == "__main__":
     print("=== Convergence Tests ===\n")
 
@@ -173,5 +270,17 @@ if __name__ == "__main__":
 
     print("\n5. Realistic conflict scenario (bug repro):")
     test_realistic_conflict()
+
+    print("\n6. Orphan buffer — child before parent:")
+    test_orphan_child_before_parent()
+
+    print("\n7. Orphan cascade — grandchild before all:")
+    test_orphan_cascade()
+
+    print("\n8. Invalid prev_pixel_hash — rejected properly:")
+    test_invalid_prev_pixel_hash()
+
+    print("\n9. Orphan buffer limit (DoS protection):")
+    test_orphan_buffer_limit()
 
     print("\n✓ All convergence tests passed!")

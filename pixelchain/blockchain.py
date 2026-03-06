@@ -43,6 +43,8 @@ class EpochState:
 class Blockchain:
     """Manages the full blockchain state: epochs, closures, canvas, and branch selection."""
 
+    _MAX_ORPHANS = 2000  # hard cap to prevent DoS
+
     def __init__(self):
         # Chain of closure blocks indexed by epoch name
         self.closures: Dict[str, ClosureBlock] = {}
@@ -57,6 +59,10 @@ class Blockchain:
         self.total_work: int = 0
         # Pixel hashes we've seen (for dedup)
         self._seen_hashes: Set[str] = set()
+        # Orphan buffer: pixels whose prev_pixel_hash isn't known yet.
+        # Key = prev_pixel_hash hex they're waiting for, value = list of pixels.
+        self._orphans: Dict[str, List[Pixel]] = defaultdict(list)
+        self._orphan_count: int = 0
         # Callbacks for UI notification
         self._on_pixel_confirmed = None
         self._on_epoch_change = None
@@ -121,13 +127,27 @@ class Blockchain:
         if state.pixel_count >= PIXELS_PER_EPOCH - 1:  # leave last slot for closure
             return False
 
-        # Validate prev_pixel_hash — stored in the pixel data (part of its hash)
-        # but NOT used for conflict resolution.  We accept the pixel regardless
-        # of whether the referenced parent has arrived, to avoid order-dependent
-        # rejection that would break convergence.
+        # Validate prev_pixel_hash
+        if pixel.prev_pixel_hash is not None:
+            parent_hex = pixel.prev_pixel_hash.hex()
+            if parent_hex not in self._seen_hashes:
+                # Parent not yet known — buffer as orphan
+                if self._orphan_count < self._MAX_ORPHANS:
+                    self._orphans[parent_hex].append(pixel)
+                    self._orphan_count += 1
+                    self._seen_hashes.add(hash_hex)  # prevent re-buffering
+                    logger.debug(
+                        "Orphan pixel %s waiting for parent %s",
+                        hash_hex[:16], parent_hex[:16],
+                    )
+                    return True  # accepted (deferred)
+                else:
+                    logger.debug("Orphan buffer full, rejecting pixel")
+                    return False
 
-        # Accept the pixel
+        # Accept the pixel (and release any orphans waiting for it)
         self._apply_pixel(pixel, state)
+        self._release_orphans(hash_hex, state)
         return True
 
     def _apply_pixel(self, pixel: Pixel, state: EpochState):
@@ -172,6 +192,18 @@ class Blockchain:
 
         if self._on_pixel_confirmed:
             self._on_pixel_confirmed(pixel)
+
+    def _release_orphans(self, parent_hex: str, state: EpochState):
+        """Recursively release orphaned pixels whose parent has just been accepted."""
+        waiting = self._orphans.pop(parent_hex, None)
+        if not waiting:
+            return
+        for orphan in waiting:
+            self._orphan_count -= 1
+            # The orphan already passed all validation in accept_pixel and
+            # was added to _seen_hashes.  Just apply it and recurse.
+            self._apply_pixel(orphan, state)
+            self._release_orphans(orphan.hash.hex(), state)
 
     # -------------------------------------------------------------------
     # Closure block acceptance
