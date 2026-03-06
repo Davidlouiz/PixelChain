@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PixelChain</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: #0a0a0f;
+            color: #e0e0e0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            background: #12121a;
+            border-bottom: 1px solid #2a2a3a;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .logo {
+            font-size: 1.4em;
+            font-weight: 700;
+            color: #7c6ff7;
+            letter-spacing: -0.5px;
+        }
+        .logo span { color: #e0e0e0; }
+        .status-bar {
+            display: flex;
+            gap: 20px;
+            font-size: 0.85em;
+            color: #8888aa;
+        }
+        .status-bar .val { color: #c0c0e0; font-weight: 600; }
+        .connection-dot {
+            display: inline-block;
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: #f44;
+            margin-right: 4px;
+            vertical-align: middle;
+        }
+        .connection-dot.connected { background: #4f4; }
+
+        /* Pool */
+        #pool-section {
+            background: #12121a;
+            border-bottom: 1px solid #2a2a3a;
+            padding: 10px 20px;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            flex-wrap: wrap;
+            height: 50px;
+            overflow-y: auto;
+        }
+        #pool-section .pool-label {
+            font-size: 0.8em;
+            color: #8888aa;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-right: 4px;
+        }
+        #pool-section .clear-btn {
+            font-size: 0.65em;
+            padding: 2px 7px;
+            background: transparent;
+            color: #666;
+            border: 1px solid #333;
+            border-radius: 4px;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            transition: all 0.15s;
+            line-height: 1.4;
+        }
+        #pool-section .clear-btn:hover {
+            color: #e55;
+            border-color: #e55;
+            background: #e5535510;
+        }
+        .pool-pixel {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: #1a1a2a;
+            border: 1px solid #2a2a3a;
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 0.8em;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .pool-pixel:hover { border-color: #f44; }
+        .pool-pixel .color-swatch {
+            width: 14px; height: 14px;
+            border-radius: 3px;
+            border: 1px solid #444;
+        }
+        .pool-pixel .coords { color: #aaa; }
+        .pool-pixel.mining { border-color: #ff0; }
+        .pool-pixel.mining::after {
+            content: '⛏';
+            font-size: 0.7em;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 0.3; }
+            50% { opacity: 1; }
+        }
+
+        /* Main area */
+        main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            overflow: auto;
+        }
+
+        /* Controls */
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        .controls label {
+            font-size: 0.85em;
+            color: #aaa;
+        }
+        #color-picker {
+            width: 40px; height: 32px;
+            border: 2px solid #444;
+            border-radius: 4px;
+            cursor: pointer;
+            background: none;
+            padding: 0;
+        }
+        #color-hex {
+            width: 80px;
+            background: #1a1a2a;
+            border: 1px solid #333;
+            color: #e0e0e0;
+            padding: 5px 8px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.9em;
+        }
+        .btn {
+            background: #7c6ff7;
+            color: #fff;
+            border: none;
+            padding: 7px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85em;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+        .btn:hover { background: #6a5ce0; }
+        .btn:disabled { background: #444; cursor: not-allowed; }
+        .btn.active { background: #4caf50; box-shadow: 0 0 8px #4caf5066; }
+        .cursor-info {
+            font-family: monospace;
+            font-size: 0.85em;
+            color: #888;
+            min-width: 120px;
+        }
+        .brush-size {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.85em;
+            color: #aaa;
+        }
+        .brush-size input[type=range] {
+            width: 60px;
+            accent-color: #7c6ff7;
+        }
+        .brush-preview {
+            border: 1px solid #555;
+            border-radius: 2px;
+            display: inline-block;
+        }
+        .shortcuts {
+            font-size: 0.7em;
+            color: #555;
+            margin-left: 10px;
+        }
+        .shortcuts kbd {
+            background: #1a1a2a;
+            border: 1px solid #333;
+            border-radius: 3px;
+            padding: 1px 4px;
+            font-family: monospace;
+            color: #888;
+        }
+
+        /* Canvas container */
+        .canvas-wrap {
+            position: relative;
+            border: 1px solid #2a2a3a;
+            background: #000;
+            overflow: auto;
+            max-width: 100%;
+            max-height: calc(100vh - 220px);
+            cursor: crosshair;
+        }
+        #pixel-canvas {
+            image-rendering: pixelated;
+            display: block;
+        }
+        /* Hover highlight */
+        .canvas-wrap .highlight {
+            position: absolute;
+            border: 2px solid #fff;
+            pointer-events: none;
+            display: none;
+        }
+
+        /* Zoom controls */
+        .zoom-controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .zoom-controls button {
+            background: #1a1a2a;
+            color: #ccc;
+            border: 1px solid #333;
+            width: 30px; height: 30px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1.1em;
+        }
+        .zoom-controls button:hover { background: #2a2a3a; }
+        .zoom-level { font-size: 0.85em; color: #888; min-width: 40px; text-align: center; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo">Pixel<span>Chain</span></div>
+        <div class="status-bar">
+            <div>
+                <span class="connection-dot" id="conn-dot"></span>
+                <span id="conn-status">Disconnected</span>
+            </div>
+            <div>Epoch: <span class="val" id="epoch-val">a</span></div>
+            <div>Difficulty: <span class="val" id="diff-val">1</span></div>
+            <div>Pixels: <span class="val" id="pixel-count">0</span></div>
+        </div>
+    </header>
+
+    <div id="pool-section">
+        <span class="pool-label">Mining Pool</span>
+        <button class="clear-btn" id="clear-pool-btn" title="Cancel all queued pixels">✕ clear</button>
+        <span id="pool-empty" style="color:#555; font-size:0.8em;">No pixels queued</span>
+    </div>
+
+    <main>
+        <div class="controls">
+            <label>Color:</label>
+            <input type="color" id="color-picker" value="#FF3A00">
+            <input type="text" id="color-hex" value="FF3A00" maxlength="6" spellcheck="false">
+            <div class="brush-size">
+                <label>Brush:</label>
+                <input type="range" id="brush-range" min="1" max="10" value="1">
+                <span id="brush-val">1</span>
+                <div class="brush-preview" id="brush-preview" style="width:10px;height:10px;background:#FF3A00"></div>
+            </div>
+            <button class="btn active" id="draw-btn">Draw ✏️</button>
+            <button class="btn" id="pick-btn">Pick 💉</button>
+            <span class="cursor-info" id="cursor-info">Click to draw</span>
+            <span class="shortcuts"><kbd>D</kbd> draw <kbd>I</kbd> pick <kbd>+</kbd><kbd>−</kbd> zoom <kbd>[</kbd><kbd>]</kbd> brush</span>
+        </div>
+        <div class="zoom-controls">
+            <button id="zoom-out">−</button>
+            <span class="zoom-level" id="zoom-level">×10</span>
+            <button id="zoom-in">+</button>
+        </div>
+        <div class="canvas-wrap" id="canvas-wrap">
+            <canvas id="pixel-canvas" width="1000" height="1000"></canvas>
+            <div class="highlight" id="highlight"></div>
+        </div>
+    </main>
+
+    <script>
+    (() => {
+        // --- State ---
+        const WS_URL = `ws://${location.host}`;
+        let ws = null;
+        let connected = false;
+        let zoom = 10;
+        let selectedX = -1, selectedY = -1;
+        let drawing = false;  // mouse is held down
+        let lastDrawX = -1, lastDrawY = -1;
+        let brushSize = 1;
+        let mode = 'draw'; // 'draw' | 'pick'
+        const pool = new Map(); // id -> {x, y, color, status}
+        const pendingCoords = new Set(); // "x,y" of pixels already queued this stroke
+        let poolRenderScheduled = false;
+        let wsSendQueue = [];  // buffered messages during drawing
+        let wsSendTimer = null;
+
+        // --- DOM ---
+        const canvas = document.getElementById('pixel-canvas');
+        const ctx = canvas.getContext('2d');
+        const wrap = document.getElementById('canvas-wrap');
+        const highlight = document.getElementById('highlight');
+        const connDot = document.getElementById('conn-dot');
+        const connStatus = document.getElementById('conn-status');
+        const epochVal = document.getElementById('epoch-val');
+        const diffVal = document.getElementById('diff-val');
+        const pixelCount = document.getElementById('pixel-count');
+        const colorPicker = document.getElementById('color-picker');
+        const colorHex = document.getElementById('color-hex');
+        const drawBtn = document.getElementById('draw-btn');
+        const pickBtn = document.getElementById('pick-btn');
+        const brushRange = document.getElementById('brush-range');
+        const brushVal = document.getElementById('brush-val');
+        const brushPreview = document.getElementById('brush-preview');
+        const cursorInfo = document.getElementById('cursor-info');
+        const poolSection = document.getElementById('pool-section');
+        const poolEmpty = document.getElementById('pool-empty');
+        const clearPoolBtn = document.getElementById('clear-pool-btn');
+        const zoomLevel = document.getElementById('zoom-level');
+
+        // --- Canvas image data ---
+        const imgData = ctx.createImageData(1000, 1000);
+        // Fill with black, alpha=255
+        for (let i = 3; i < imgData.data.length; i += 4) imgData.data[i] = 255;
+
+        function renderCanvas() {
+            ctx.putImageData(imgData, 0, 0);
+            canvas.style.width = (1000 * zoom) + 'px';
+            canvas.style.height = (1000 * zoom) + 'px';
+        }
+
+        function setPixel(x, y, r, g, b) {
+            const idx = (y * 1000 + x) * 4;
+            imgData.data[idx] = r;
+            imgData.data[idx + 1] = g;
+            imgData.data[idx + 2] = b;
+        }
+
+        // --- Zoom ---
+        document.getElementById('zoom-in').addEventListener('click', () => {
+            if (zoom < 40) { zoom = Math.min(40, zoom + (zoom < 10 ? 1 : 5)); applyZoom(); }
+        });
+        document.getElementById('zoom-out').addEventListener('click', () => {
+            if (zoom > 1) { zoom = Math.max(1, zoom - (zoom <= 10 ? 1 : 5)); applyZoom(); }
+        });
+        function applyZoom() {
+            zoomLevel.textContent = '×' + zoom;
+            canvas.style.width = (1000 * zoom) + 'px';
+            canvas.style.height = (1000 * zoom) + 'px';
+            if (selectedX >= 0) positionHighlight(selectedX, selectedY);
+        }
+
+        // --- Mode switching ---
+        function setMode(m) {
+            mode = m;
+            drawBtn.classList.toggle('active', m === 'draw');
+            pickBtn.classList.toggle('active', m === 'pick');
+            wrap.style.cursor = m === 'pick' ? 'pointer' : 'crosshair';
+        }
+        drawBtn.addEventListener('click', () => setMode('draw'));
+        pickBtn.addEventListener('click', () => setMode('pick'));
+
+        // --- Brush size ---
+        brushRange.addEventListener('input', () => {
+            brushSize = parseInt(brushRange.value);
+            brushVal.textContent = brushSize;
+            updateBrushPreview();
+        });
+        function updateBrushPreview() {
+            const sz = Math.max(6, brushSize * 6);
+            brushPreview.style.width = sz + 'px';
+            brushPreview.style.height = sz + 'px';
+            brushPreview.style.background = '#' + colorHex.value;
+            brushPreview.style.borderRadius = brushSize > 1 ? '50%' : '2px';
+        }
+
+        // --- Bresenham line between two points ---
+        function lineBetween(x0, y0, x1, y1) {
+            const pts = [];
+            const dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+            const dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+            let err = dx + dy;
+            let cx = x0, cy = y0;
+            while (true) {
+                pts.push([cx, cy]);
+                if (cx === x1 && cy === y1) break;
+                const e2 = 2 * err;
+                if (e2 >= dy) { err += dy; cx += sx; }
+                if (e2 <= dx) { err += dx; cy += sy; }
+            }
+            return pts;
+        }
+
+        // --- Throttled pool render ---
+        function scheduleRenderPool() {
+            if (!poolRenderScheduled) {
+                poolRenderScheduled = true;
+                requestAnimationFrame(() => {
+                    poolRenderScheduled = false;
+                    renderPool();
+                });
+            }
+        }
+
+        // --- Batched WS send ---
+        function flushWsSendQueue() {
+            for (const msg of wsSendQueue) ws.send(msg);
+            wsSendQueue.length = 0;
+            wsSendTimer = null;
+        }
+        function wsSendBatched(msg) {
+            wsSendQueue.push(msg);
+            if (!wsSendTimer) wsSendTimer = setTimeout(flushWsSendQueue, 30);
+        }
+
+        // --- Place pixel(s) with brush ---
+        function placePixels(cx, cy) {
+            if (!connected) return;
+            const color = colorHex.value.padEnd(6, '0').toUpperCase();
+            const half = Math.floor(brushSize / 2);
+            for (let dy = -half; dy < brushSize - half; dy++) {
+                for (let dx = -half; dx < brushSize - half; dx++) {
+                    const px = cx + dx, py = cy + dy;
+                    if (px < 0 || px >= 1000 || py < 0 || py >= 1000) continue;
+                    const key = px + ',' + py;
+                    if (pendingCoords.has(key)) continue;
+                    pendingCoords.add(key);
+                    const id = crypto.randomUUID();
+                    wsSendBatched(JSON.stringify({ type: 'add_pixel', id, x: px, y: py, color }));
+                    pool.set(id, { x: px, y: py, color, status: 'mining' });
+                }
+            }
+            scheduleRenderPool();
+        }
+
+        // --- Eyedropper ---
+        function pickColor(x, y) {
+            if (x < 0 || x >= 1000 || y < 0 || y >= 1000) return;
+            const idx = (y * 1000 + x) * 4;
+            const r = imgData.data[idx], g = imgData.data[idx+1], b = imgData.data[idx+2];
+            const hex = ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0').toUpperCase();
+            colorHex.value = hex;
+            colorPicker.value = '#' + hex;
+            updateBrushPreview();
+            cursorInfo.textContent = `Picked #${hex}`;
+        }
+
+        // --- Canvas interaction ---
+        function canvasCoords(e) {
+            const rect = canvas.getBoundingClientRect();
+            return [Math.floor((e.clientX - rect.left) / zoom),
+                    Math.floor((e.clientY - rect.top) / zoom)];
+        }
+
+        wrap.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            const [x, y] = canvasCoords(e);
+            if (x < 0 || x >= 1000 || y < 0 || y >= 1000) return;
+            if (mode === 'pick') { pickColor(x, y); return; }
+            drawing = true;
+            pendingCoords.clear();
+            lastDrawX = x; lastDrawY = y;
+            placePixels(x, y);
+            positionHighlight(x, y);
+        });
+
+        wrap.addEventListener('mousemove', (e) => {
+            const [x, y] = canvasCoords(e);
+            if (x >= 0 && x < 1000 && y >= 0 && y < 1000) {
+                cursorInfo.textContent = `(${x}, ${y})`;
+                positionHighlight(x, y);
+            }
+            if (drawing && mode === 'draw') {
+                if (x < 0 || x >= 1000 || y < 0 || y >= 1000) return;
+                // Interpolate from last point
+                const pts = lineBetween(lastDrawX, lastDrawY, x, y);
+                for (const [px, py] of pts) placePixels(px, py);
+                lastDrawX = x; lastDrawY = y;
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            drawing = false;
+            pendingCoords.clear();
+            // Flush any remaining batched messages
+            if (wsSendTimer) { clearTimeout(wsSendTimer); flushWsSendQueue(); }
+        });
+
+        function positionHighlight(x, y) {
+            const half = Math.floor(brushSize / 2);
+            highlight.style.display = 'block';
+            highlight.style.left = ((x - half) * zoom - 2) + 'px';
+            highlight.style.top = ((y - half) * zoom - 2) + 'px';
+            highlight.style.width = (brushSize * zoom + 4) + 'px';
+            highlight.style.height = (brushSize * zoom + 4) + 'px';
+        }
+
+        // --- Color picker sync ---
+        colorPicker.addEventListener('input', () => {
+            colorHex.value = colorPicker.value.slice(1).toUpperCase();
+            updateBrushPreview();
+        });
+        colorHex.addEventListener('input', () => {
+            const v = colorHex.value.replace(/[^0-9a-fA-F]/g, '').slice(0, 6);
+            colorHex.value = v.toUpperCase();
+            if (v.length === 6) colorPicker.value = '#' + v;
+            updateBrushPreview();
+        });
+
+        // --- Keyboard shortcuts ---
+        document.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT') return;
+            switch (e.key.toLowerCase()) {
+                case 'd': setMode('draw'); break;
+                case 'i': pickBtn.click(); break;
+                case '=': case '+': document.getElementById('zoom-in').click(); break;
+                case '-': document.getElementById('zoom-out').click(); break;
+                case '[': brushRange.value = Math.max(1, brushSize - 1); brushRange.dispatchEvent(new Event('input')); break;
+                case ']': brushRange.value = Math.min(10, brushSize + 1); brushRange.dispatchEvent(new Event('input')); break;
+            }
+        });
+
+        // --- Clear pool ---
+        clearPoolBtn.addEventListener('click', () => {
+            if (!connected || pool.size === 0) return;
+            ws.send(JSON.stringify({ type: 'clear_pool' }));
+            pool.clear();
+            renderPool();
+        });
+
+        // --- Pool rendering ---
+        function renderPool() {
+            poolEmpty.style.display = pool.size === 0 ? '' : 'none';
+            pixelCount.textContent = pool.size;
+            // Only show the last N items to avoid DOM overload
+            const MAX_SHOWN = 30;
+            poolSection.querySelectorAll('.pool-pixel').forEach(el => el.remove());
+            let shown = 0;
+            const entries = [...pool.entries()];
+            // Show newest first (end of map)
+            for (let i = entries.length - 1; i >= 0 && shown < MAX_SHOWN; i--, shown++) {
+                const [id, p] = entries[i];
+                const el = document.createElement('div');
+                el.className = 'pool-pixel' + (p.status === 'mining' ? ' mining' : '');
+                el.innerHTML = `<div class="color-swatch" style="background:#${p.color}"></div><span class="coords">(${p.x},${p.y})</span>`;
+                el.title = 'Click to cancel';
+                el.addEventListener('click', () => {
+                    ws.send(JSON.stringify({ type: 'cancel_pixel', id }));
+                    pool.delete(id);
+                    renderPool();
+                });
+                poolSection.appendChild(el);
+            }
+            if (entries.length > MAX_SHOWN) {
+                const more = document.createElement('div');
+                more.className = 'pool-pixel';
+                more.innerHTML = `<span class="coords">+${entries.length - MAX_SHOWN} more</span>`;
+                poolSection.appendChild(more);
+            }
+        }
+
+        // --- WebSocket ---
+        function connect() {
+            ws = new WebSocket(WS_URL);
+
+            ws.addEventListener('open', () => {
+                connected = true;
+                connDot.classList.add('connected');
+                connStatus.textContent = 'Connected';
+            });
+
+            ws.addEventListener('close', () => {
+                connected = false;
+                connDot.classList.remove('connected');
+                connStatus.textContent = 'Disconnected';
+                setTimeout(connect, 3000);
+            });
+
+            ws.addEventListener('error', () => {});
+
+            ws.addEventListener('message', (e) => {
+                let msg;
+                try { msg = JSON.parse(e.data); } catch { return; }
+                handleMessage(msg);
+            });
+        }
+
+        function handleMessage(msg) {
+            switch (msg.type) {
+                case 'canvas_init': {
+                    const raw = atob(msg.pixels);
+                    for (let i = 0; i < 1000000; i++) {
+                        const si = i * 3;
+                        const di = i * 4;
+                        imgData.data[di] = raw.charCodeAt(si);
+                        imgData.data[di + 1] = raw.charCodeAt(si + 1);
+                        imgData.data[di + 2] = raw.charCodeAt(si + 2);
+                    }
+                    renderCanvas();
+                    break;
+                }
+                case 'pool_init': {
+                    pool.clear();
+                    (msg.pixels || []).forEach(p => {
+                        pool.set(p.id, { x: p.x, y: p.y, color: p.color, status: p.status });
+                    });
+                    renderPool();
+                    break;
+                }
+                case 'canvas_update': {
+                    const c = msg.color;
+                    const r = parseInt(c.slice(0, 2), 16);
+                    const g = parseInt(c.slice(2, 4), 16);
+                    const b = parseInt(c.slice(4, 6), 16);
+                    setPixel(msg.x, msg.y, r, g, b);
+                    renderCanvas();
+                    break;
+                }
+                case 'pool_confirmed': {
+                    pool.delete(msg.id);
+                    renderPool();
+                    break;
+                }
+                case 'pool_requeued': {
+                    const p = pool.get(msg.id);
+                    if (p) { p.status = 'mining'; renderPool(); }
+                    break;
+                }
+                case 'epoch_update': {
+                    epochVal.textContent = msg.epoch;
+                    diffVal.textContent = typeof msg.difficulty === 'number' ? msg.difficulty.toFixed(1) : msg.difficulty;
+                    break;
+                }
+            }
+        }
+
+        // --- Init ---
+        updateBrushPreview();
+        renderCanvas();
+        connect();
+    })();
+    </script>
+</body>
+</html>
