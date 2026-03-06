@@ -228,31 +228,36 @@ class Node:
         peer.best_work = msg.get("best_work", 0)
         peer.handshake_done = True
 
-        # If peer has a longer chain, we should sync
-        if peer.best_work > self.blockchain.total_work:
+        # Always sync with peer — both sides may have unique pixels
+        # (e.g. after a network partition)
+        my_work = self.blockchain.total_work
+        if peer.best_work != my_work:
             logger.info(
-                "Peer %s has more work (%d vs %d), syncing",
+                "Peer %s work differs (%d vs %d), syncing",
                 peer.address,
                 peer.best_work,
-                self.blockchain.total_work,
+                my_work,
             )
-            # Request closures first
-            await self.network.send_to_peer(
-                peer.address,
-                {
-                    "type": "get_closures",
-                    "from_epoch": "a",
-                },
-            )
-            # Also request current epoch pixels
-            peer_epoch = peer.best_closure if peer.best_closure else "a"
-            await self.network.send_to_peer(
-                peer.address,
-                {
-                    "type": "get_epoch_pixels",
-                    "epoch": peer_epoch,
-                },
-            )
+        else:
+            logger.info("Peer %s same work (%d), syncing anyway", peer.address, my_work)
+
+        # Request closures
+        await self.network.send_to_peer(
+            peer.address,
+            {
+                "type": "get_closures",
+                "from_epoch": "a",
+            },
+        )
+        # Request current epoch pixels from peer
+        peer_epoch = peer.best_closure if peer.best_closure else "a"
+        await self.network.send_to_peer(
+            peer.address,
+            {
+                "type": "get_epoch_pixels",
+                "epoch": peer_epoch,
+            },
+        )
 
         # Store listen_port if present for peer discovery
         listen_port = msg.get("listen_port")

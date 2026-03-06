@@ -155,7 +155,18 @@ class Blockchain:
         if pixel.prev_pixel_hash is not None:
             new_work += existing_work  # builds on existing chain
 
-        if new_work >= existing_work or coord not in state.coord_best:
+        # Determine whether this pixel should replace the current best
+        if coord not in state.coord_best:
+            replace = True
+        elif new_work > existing_work:
+            replace = True
+        elif new_work == existing_work:
+            # Deterministic tie-break: lower hash wins (more actual PoW)
+            replace = pixel.hash < state.coord_best[coord].hash
+        else:
+            replace = False
+
+        if replace:
             state.coord_best[coord] = pixel
             state.coord_work[coord] = new_work
             # Update canvas
