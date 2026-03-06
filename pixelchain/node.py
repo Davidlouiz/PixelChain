@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import threading
 import time
 from typing import Dict, List, Optional, Set
 
@@ -163,53 +162,31 @@ class Node:
     async def _on_pixel_mined_on_loop(
         self, entry: PoolEntry, pixel: Pixel, pool_id: str
     ):
-        """Process a mined pixel on the event loop (thread-safe)."""
+        """Process a mined pixel on the event loop (thread-safe).
+
+        The pixel has already been mined by a worker thread.  We accept it
+        into the blockchain and notify browsers / peers.
+
+        We do NOT requeue on coord-competition loss: the pool deduplicates
+        by coordinate, so only the latest user-intended colour is queued.
+        If this pixel lost, its colour was already superseded by a newer
+        pool entry at the same coord (which will chain on top and win).
+        """
         accepted = self.blockchain.accept_pixel(pixel)
         if accepted:
-            # Broadcast the valid pixel to peers regardless
+            hash_hex = pixel.hash.hex()
+            self._pool_pixel_map[pool_id] = hash_hex
+            entry.status = "confirmed"
+            logger.info("Local pixel %s confirmed: hash=%s", pool_id, hash_hex[:16])
+            # Broadcast to peers and notify browser
             await self.network.broadcast(pixel.to_dict())
-
-            # Check whether this pixel actually became the displayed one
-            # at its coordinate.  If not (e.g. two pixels at the same coord
-            # were mined simultaneously with the same prev_pixel_hash and
-            # this one lost), re-mine so the next attempt chains on top of
-            # the winner and is guaranteed to replace it.
-            state = self.blockchain.epoch_states.get(pixel.epoch)
-            coord = (pixel.x, pixel.y)
-            is_displayed = (
-                state is not None
-                and state.coord_best.get(coord) is pixel
-            )
-
-            if is_displayed:
-                hash_hex = pixel.hash.hex()
-                self._pool_pixel_map[pool_id] = hash_hex
-                entry.status = "confirmed"
-                logger.info(
-                    "Local pixel %s confirmed & displayed: hash=%s",
-                    pool_id,
-                    hash_hex[:16],
-                )
-                await self._ws_broadcast({"type": "pool_confirmed", "id": pool_id})
-            else:
-                logger.info(
-                    "Local pixel %s accepted but lost coord competition, re-mining",
-                    pool_id,
-                )
-                self._requeue_pool_entry(entry)
+            await self._ws_broadcast({"type": "pool_confirmed", "id": pool_id})
         else:
-            logger.debug("Local pixel %s rejected, re-mining", pool_id)
-            self._requeue_pool_entry(entry)
-
-    def _requeue_pool_entry(self, entry: PoolEntry):
-        """Re-add a pool entry to the mining queue so it gets re-mined
-        with the latest prev_pixel_hash."""
-        with self.pool._lock:
-            entry.status = "pending"
-            entry.cancel_event = threading.Event()
-            if entry.id not in self.pool._queue:
-                self.pool._queue.append(entry.id)
-            self.pool._work_available.set()
+            # Pixel rejected (e.g. epoch changed, duplicate).  Just drop it;
+            # the pool's coord dedup ensures only the latest attempt matters.
+            entry.status = "confirmed"  # remove from pool
+            logger.debug("Local pixel %s rejected, dropping", pool_id)
+            await self._ws_broadcast({"type": "pool_confirmed", "id": pool_id})
 
     def _on_blockchain_pixel_confirmed(self, pixel: Pixel):
         """Called when any pixel is confirmed on the blockchain."""

@@ -46,6 +46,7 @@ class MiningPool:
     ):
         self._entries: Dict[str, PoolEntry] = {}
         self._queue: List[str] = []  # entry IDs waiting to be mined
+        self._coord_entry: Dict[tuple, str] = {}  # (x,y) -> entry ID dedup
         self._lock = threading.Lock()
         self._get_epoch = get_epoch
         self._get_difficulty = get_difficulty
@@ -82,11 +83,28 @@ class MiningPool:
     def add_pixel(
         self, pixel_id: str, x: int, y: int, r: int, g: int, b: int
     ) -> PoolEntry:
-        """Add a pixel request to the pool."""
+        """Add a pixel request to the pool.
+
+        If there is already a pending/mining entry at the same (x, y),
+        cancel it so only the latest colour at each coordinate is mined.
+        This prevents an ever-growing queue when the user draws over the
+        same pixels repeatedly (e.g. brush strokes).
+        """
         entry = PoolEntry(id=pixel_id, x=x, y=y, r=r, g=g, b=b)
+        coord = (x, y)
         with self._lock:
+            # Cancel previous entry at this coordinate if any
+            old_id = self._coord_entry.get(coord)
+            if old_id is not None:
+                old_entry = self._entries.get(old_id)
+                if old_entry and old_entry.status in ("pending", "mining"):
+                    old_entry.status = "cancelled"
+                    old_entry.cancel_event.set()
+                    if old_id in self._queue:
+                        self._queue.remove(old_id)
             self._entries[pixel_id] = entry
             self._queue.append(pixel_id)
+            self._coord_entry[coord] = pixel_id
         self._work_available.set()
         logger.info(
             "Added pixel %s to pool at (%d,%d) color %02X%02X%02X",
@@ -119,6 +137,7 @@ class MiningPool:
                 entry.cancel_event.set()
             self._entries.clear()
             self._queue.clear()
+            self._coord_entry.clear()
         logger.info("Cleared entire mining pool")
 
     def confirm_pixel(self, pixel_id: str):
