@@ -19,6 +19,7 @@ from .models import ClosureBlock, Pixel
 logger = logging.getLogger(__name__)
 
 GENESIS_CLOSURE_HASH = b"\x00" * 32  # sentinel for epoch "a"
+GENESIS_START_TIME = 0  # deterministic start time for epoch "a"
 
 
 @dataclass
@@ -73,16 +74,36 @@ class Blockchain:
         self._on_canvas_update = None
 
         # Initialise the first epoch
-        self._init_epoch("a", GENESIS_CLOSURE_HASH, INITIAL_DIFFICULTY_BITS)
+        self._init_epoch("a", GENESIS_CLOSURE_HASH, INITIAL_DIFFICULTY_BITS,
+                         start_time=GENESIS_START_TIME)
 
-    def _init_epoch(self, epoch: str, prev_closure_hash: bytes, difficulty: float):
+    def _init_epoch(self, epoch: str, prev_closure_hash: bytes, difficulty: float,
+                    *, start_time: float | None = None):
         """Initialise a new epoch state."""
         state = EpochState(
             epoch=epoch,
             difficulty=difficulty,
             closure_hash=prev_closure_hash,
         )
+        if start_time is not None:
+            state.start_time = start_time
         self.epoch_states[epoch] = state
+
+    def reset(self):
+        """Reset the blockchain to genesis state (for chain reorganisation)."""
+        self.closures.clear()
+        self.epoch_states.clear()
+        self.canvas = Canvas()
+        self.current_epoch = "a"
+        self.current_difficulty = INITIAL_DIFFICULTY_BITS
+        self.total_work = 0
+        self._seen_hashes.clear()
+        self._orphans.clear()
+        self._orphan_count = 0
+        self._chain_work.clear()
+        self._init_epoch("a", GENESIS_CLOSURE_HASH, INITIAL_DIFFICULTY_BITS,
+                         start_time=GENESIS_START_TIME)
+        logger.info("Blockchain reset to genesis")
 
     # -------------------------------------------------------------------
     # Pixel acceptance
@@ -264,16 +285,17 @@ class Blockchain:
             logger.debug("Closure prev_closure_hash mismatch")
             return False
 
-        # Check PoW
-        if not hash_meets_target(closure.hash, state.difficulty):
-            logger.debug("Closure PoW insufficient")
-            return False
-
         if closure.compute_hash() != closure.hash:
             logger.debug("Closure hash verification failed")
             return False
 
         if not sync_mode:
+            # Check PoW target (skipped in sync_mode because difficulty
+            # may not match during reorg/replay)
+            if not hash_meets_target(closure.hash, state.difficulty):
+                logger.debug("Closure PoW insufficient")
+                return False
+
             # Check that epoch has enough pixels (closure is the last item)
             if state.pixel_count < PIXELS_PER_EPOCH - 1:
                 logger.debug("Not enough pixels for closure: %d", state.pixel_count)
@@ -313,14 +335,21 @@ class Blockchain:
         new_epoch = next_epoch(closure.epoch)
         state = self.epoch_states.get(closure.epoch)
 
-        # Compute new difficulty based on actual epoch duration
-        actual_duration = closure.timestamp - state.start_time
-        new_difficulty = compute_new_difficulty(state.difficulty, actual_duration)
+        if closure.next_difficulty > 0:
+            # Use the difficulty stored in the closure (deterministic replay)
+            new_difficulty = closure.next_difficulty
+        else:
+            # Backward compat / compute from duration
+            actual_duration = closure.timestamp - state.start_time
+            new_difficulty = compute_new_difficulty(state.difficulty, actual_duration)
 
         self.current_epoch = new_epoch
         self.current_difficulty = new_difficulty
 
-        self._init_epoch(new_epoch, closure.hash, new_difficulty)
+        # Start the new epoch at the closure's timestamp so that
+        # difficulty computation is deterministic across all nodes.
+        self._init_epoch(new_epoch, closure.hash, new_difficulty,
+                         start_time=closure.timestamp)
 
         logger.info(
             "Advanced to epoch %s, difficulty %.2f bits", new_epoch, new_difficulty
@@ -332,6 +361,17 @@ class Blockchain:
     # -------------------------------------------------------------------
     # Branch selection & reorg
     # -------------------------------------------------------------------
+
+    @property
+    def closure_work(self) -> int:
+        """Sum of PoW work from closure blocks only.
+
+        This is the canonical metric for chain comparison: it is fully
+        deterministic and always reproducible from closures alone, unlike
+        total_work which also includes pixel PoW and becomes inconsistent
+        after a reset+replay in sync mode.
+        """
+        return sum(c.pow_work() for c in self.closures.values())
 
     def compute_branch_weight(self) -> int:
         """Compute total weight of the current branch."""
@@ -348,7 +388,7 @@ class Blockchain:
 
     def should_reorg(self, other_work: int) -> bool:
         """Check if a competing branch with other_work is heavier."""
-        return other_work > self.total_work
+        return other_work > self.closure_work
 
     def get_orphaned_pixels(self, epoch: str) -> List[Pixel]:
         """Get all pixels from an epoch that would need remining after a reorg."""

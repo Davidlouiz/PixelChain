@@ -91,7 +91,7 @@ class P2PNetwork:
         self._on_peer_change = handler
 
     def set_handshake_info_provider(self, provider: Callable):
-        """Set callback that returns (current_epoch, total_work) for handshake."""
+        """Set callback that returns (current_epoch, closure_work) for handshake."""
         self._get_handshake_info = provider
 
     # -------------------------------------------------------------------

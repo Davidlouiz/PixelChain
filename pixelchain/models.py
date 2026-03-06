@@ -173,6 +173,7 @@ class ClosureBlock:
     timestamp: float = (
         0.0  # time this closure was created (unix ts), for difficulty calc
     )
+    next_difficulty: float = 0.0  # difficulty for the NEXT epoch (not in hash)
 
     def serialise_for_hash(self) -> bytes:
         epoch_bytes = self.epoch.encode("ascii")
@@ -225,6 +226,7 @@ class ClosureBlock:
             "nonce": self.nonce,
             "hash": self.hash.hex(),
             "timestamp": self.timestamp,
+            "next_difficulty": self.next_difficulty,
         }
 
     @classmethod
@@ -238,4 +240,5 @@ class ClosureBlock:
             nonce=d["nonce"],
             hash=bytes.fromhex(d["hash"]),
             timestamp=d.get("timestamp", 0.0),
+            next_difficulty=d.get("next_difficulty", 0.0),
         )

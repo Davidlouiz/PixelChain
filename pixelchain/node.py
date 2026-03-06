@@ -76,8 +76,8 @@ class Node:
         self.network.set_peer_change_handler(self._notify_peer_count)
 
     def _get_handshake_info(self):
-        """Return (current_epoch, total_work) for P2P handshake."""
-        return self.blockchain.current_epoch, self.blockchain.total_work
+        """Return (current_epoch, closure_work) for P2P handshake."""
+        return self.blockchain.current_epoch, self.blockchain.closure_work
 
     # -------------------------------------------------------------------
     # Lifecycle
@@ -310,6 +310,8 @@ class Node:
         )
 
         difficulty = int(state.difficulty)
+        epoch_difficulty = state.difficulty
+        epoch_start_time = state.start_time
         cancel_event = self._closure_cancel_event
 
         def mine_closure():
@@ -321,6 +323,12 @@ class Node:
             success = closure.mine(difficulty, cancel_event=cancel_event)
             if success and not cancel_event.is_set():
                 closure.timestamp = time.time()
+                # Compute and store difficulty for the next epoch
+                from .difficulty import compute_new_difficulty
+                actual_duration = closure.timestamp - epoch_start_time
+                closure.next_difficulty = compute_new_difficulty(
+                    epoch_difficulty, actual_duration
+                )
                 logger.info(
                     "Closure block mined for epoch %s: hash=%s",
                     epoch,
@@ -417,7 +425,7 @@ class Node:
 
         # Always sync with peer — both sides may have unique pixels
         # (e.g. after a network partition)
-        my_work = self.blockchain.total_work
+        my_work = self.blockchain.closure_work
         if peer.best_work != my_work:
             logger.info(
                 "Peer %s work differs (%d vs %d), syncing",
@@ -493,6 +501,25 @@ class Node:
         except Exception as e:
             logger.debug("Invalid closure from %s: %s", peer.address, e)
             peer.trust_score -= 1
+            return
+
+        # --- Fork detection via gossip ---
+        # If we already have a *different* closure for this epoch,
+        # the peer is on a divergent chain.  Request their full chain
+        # so that _handle_closures can compare weights and reorg if
+        # the peer's branch is heavier.
+        our_closure = self.blockchain.closures.get(closure.epoch)
+        if our_closure and our_closure.hash != closure.hash:
+            logger.info(
+                "Fork detected (gossip) at epoch %s from %s — "
+                "requesting full chain for comparison",
+                closure.epoch,
+                peer.address,
+            )
+            await self.network.send_to_peer(
+                peer.address,
+                {"type": "get_closures", "from_epoch": "a"},
+            )
             return
 
         accepted = self.blockchain.accept_closure(closure)
@@ -592,6 +619,7 @@ class Node:
             {
                 "type": "closures",
                 "closures": [c.to_dict() for c in closures],
+                "closure_work": self.blockchain.closure_work,
             },
         )
 
@@ -601,17 +629,93 @@ class Node:
         Closures are accepted in *sync_mode* (skipping pixel-count and
         Merkle-root checks) because the canvas hasn't been downloaded yet.
         After accepting, we request the canvas and current-epoch pixels.
+
+        If a fork is detected (different closure hash for the same epoch),
+        the heavier chain wins.  On a tie, the chain whose first diverging
+        closure has the lexicographically lower hash wins.
         """
         closures_data = msg.get("closures", [])
-        accepted = 0
+        incoming: List[ClosureBlock] = []
         for cd in closures_data:
             try:
-                closure = ClosureBlock.from_dict(cd)
-                if closure.epoch not in self.blockchain.closures:
-                    if self.blockchain.accept_closure(closure, sync_mode=True):
-                        accepted += 1
+                incoming.append(ClosureBlock.from_dict(cd))
             except Exception as e:
                 logger.debug("Invalid closure in sync: %s", e)
+
+        if not incoming:
+            return
+
+        # ---- Fork detection ----
+        fork_epoch = None
+        for closure in incoming:
+            our = self.blockchain.closures.get(closure.epoch)
+            if our and our.hash != closure.hash:
+                fork_epoch = closure.epoch
+                break
+
+        if fork_epoch:
+            # Compare closure-only work — this is deterministic and consistent
+            # even after a reset+replay (unlike total_work which includes pixel PoW).
+            peer_work = msg.get("closure_work",
+                               msg.get("total_work",
+                                        getattr(peer, "best_work", 0)))
+            our_work = self.blockchain.closure_work
+
+            should_reorg = False
+            if peer_work > our_work:
+                should_reorg = True
+            elif peer_work == our_work:
+                # Deterministic tie-break: lower first-diverging closure hash wins
+                their_closure = next(
+                    c for c in incoming if c.epoch == fork_epoch
+                )
+                our_closure = self.blockchain.closures[fork_epoch]
+                should_reorg = their_closure.hash < our_closure.hash
+
+            if should_reorg:
+                logger.info(
+                    "Reorg: fork at epoch %s — switching to peer %s chain "
+                    "(peer_work=%d, our_work=%d)",
+                    fork_epoch,
+                    peer.address,
+                    peer_work,
+                    our_work,
+                )
+                self._cancel_closure_mining()
+                self._pending_closures.clear()
+                self.blockchain.reset()
+
+                for closure in incoming:
+                    self.blockchain.accept_closure(closure, sync_mode=True)
+
+                # Download canvas + current-epoch pixels
+                await self.network.send_to_peer(
+                    peer.address, {"type": "get_canvas"}
+                )
+                await self.network.send_to_peer(
+                    peer.address,
+                    {
+                        "type": "get_epoch_pixels",
+                        "epoch": self.blockchain.current_epoch,
+                    },
+                )
+                self._schedule_save()
+            else:
+                logger.info(
+                    "Fork at epoch %s — keeping our chain "
+                    "(our_work=%d >= peer_work=%d)",
+                    fork_epoch,
+                    our_work,
+                    peer_work,
+                )
+            return
+
+        # ---- No fork: accept any new closures (peer may be ahead) ----
+        accepted = 0
+        for closure in incoming:
+            if closure.epoch not in self.blockchain.closures:
+                if self.blockchain.accept_closure(closure, sync_mode=True):
+                    accepted += 1
 
         if accepted:
             logger.info(
@@ -768,7 +872,7 @@ class Node:
             return
         data = json.dumps(msg)
         disconnected = set()
-        for ws in self._ws_clients:
+        for ws in list(self._ws_clients):
             try:
                 await ws.send(data)
             except Exception:
@@ -899,6 +1003,6 @@ class Node:
             "type": "hello",
             "version": PROTOCOL_VERSION,
             "best_closure": self.blockchain.current_epoch,
-            "best_work": self.blockchain.total_work,
+            "best_work": self.blockchain.closure_work,
             "listen_port": self.config.tcp_port,
         }
