@@ -63,6 +63,10 @@ class Blockchain:
         # Key = prev_pixel_hash hex they're waiting for, value = list of pixels.
         self._orphans: Dict[str, List[Pixel]] = defaultdict(list)
         self._orphan_count: int = 0
+        # Chain-work cache: hash_hex → cumulative work along prev_pixel_hash chain.
+        # chain_work(P) = P.pow_work() + chain_work(parent) if parent else P.pow_work()
+        # Deterministic: depends only on the DAG structure, not arrival order.
+        self._chain_work: Dict[str, int] = {}
         # Callbacks for UI notification
         self._on_pixel_confirmed = None
         self._on_epoch_change = None
@@ -130,15 +134,19 @@ class Blockchain:
         # Validate prev_pixel_hash
         if pixel.prev_pixel_hash is not None:
             parent_hex = pixel.prev_pixel_hash.hex()
-            if parent_hex not in self._seen_hashes:
-                # Parent not yet known — buffer as orphan
+            if parent_hex not in self._chain_work:
+                # Parent not yet applied — buffer as orphan.
+                # We check _chain_work (not _seen_hashes) because a pixel may
+                # be "seen" but sitting in the orphan buffer itself.  We need
+                # the parent's chain_work to be computed before the child.
                 if self._orphan_count < self._MAX_ORPHANS:
                     self._orphans[parent_hex].append(pixel)
                     self._orphan_count += 1
                     self._seen_hashes.add(hash_hex)  # prevent re-buffering
                     logger.debug(
                         "Orphan pixel %s waiting for parent %s",
-                        hash_hex[:16], parent_hex[:16],
+                        hash_hex[:16],
+                        parent_hex[:16],
                     )
                     return True  # accepted (deferred)
                 else:
@@ -160,30 +168,39 @@ class Blockchain:
         coord = (pixel.x, pixel.y)
         pixel_work = pixel.pow_work()
 
-        # Conflict resolution: highest individual PoW work wins.
-        # NOTE: prev_pixel_hash is intentionally NOT used for score computation
-        # to ensure convergence regardless of pixel arrival order.  Each pixel
-        # competes purely on its own proof-of-work merit (CRDT-safe).
-        existing_work = state.coord_work[coord]
-        new_work = pixel_work
+        # Compute cumulative chain work by walking prev_pixel_hash links.
+        # The orphan buffer guarantees the parent is always applied before
+        # its children, so _chain_work[parent] is always available here.
+        chain_work = pixel_work
+        if pixel.prev_pixel_hash is not None:
+            parent_hex = pixel.prev_pixel_hash.hex()
+            chain_work += self._chain_work.get(parent_hex, 0)
+        self._chain_work[hash_hex] = chain_work
 
-        # Determine whether this pixel should replace the current best
+        # Conflict resolution: highest cumulative chain work wins.
+        # Drawing *on top* of an existing pixel accumulates PoW, so the
+        # new pixel is virtually guaranteed to replace the old one.
+        # This is deterministic and order-independent: chain_work depends
+        # only on the DAG structure (prev_pixel_hash links), not on the
+        # order in which pixels were received.
+        existing_chain_work = state.coord_work[coord]
+
         if coord not in state.coord_best:
             replace = True
-        elif new_work > existing_work:
+        elif chain_work > existing_chain_work:
             replace = True
-        elif new_work == existing_work:
-            # Deterministic tie-break: lower hash wins (more actual PoW)
+        elif chain_work == existing_chain_work:
+            # Deterministic tie-break: lower hash wins
             replace = pixel.hash < state.coord_best[coord].hash
         else:
             replace = False
 
-        # Always count this pixel's work (order-independent total)
+        # Always count this pixel's individual work (order-independent total)
         self.total_work += pixel_work
 
         if replace:
             state.coord_best[coord] = pixel
-            state.coord_work[coord] = new_work
+            state.coord_work[coord] = chain_work
             # Update canvas
             self.canvas.set_pixel(pixel.x, pixel.y, pixel.r, pixel.g, pixel.b)
             # Notify

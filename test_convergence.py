@@ -10,7 +10,11 @@ from pixelchain.config import INITIAL_DIFFICULTY_BITS
 def make_pixel(x, y, r, g, b, prev_hash=None, nonce_start=0):
     """Mine a valid pixel at the given coord."""
     p = Pixel(
-        x=x, y=y, r=r, g=g, b=b,
+        x=x,
+        y=y,
+        r=r,
+        g=g,
+        b=b,
         epoch="a",
         closure_hash=GENESIS_CLOSURE_HASH,
         prev_pixel_hash=prev_hash,
@@ -31,7 +35,7 @@ def apply_pixels_fresh(pixels_in_order):
 
 def test_two_independent_pixels():
     """Two independent pixels at the same coord — order shouldn't matter."""
-    p1 = make_pixel(5, 5, 255, 0, 0)        # red
+    p1 = make_pixel(5, 5, 255, 0, 0)  # red
     p2 = make_pixel(5, 5, 0, 255, 0, nonce_start=999999)  # green
 
     bc_ab = apply_pixels_fresh([p1, p2])
@@ -44,9 +48,9 @@ def test_two_independent_pixels():
 
 
 def test_chained_pixels():
-    """Pixel with prev_pixel_hash and one without — order shouldn't matter."""
-    p1 = make_pixel(10, 10, 255, 0, 0)   # red, no prev
-    p2 = make_pixel(10, 10, 0, 255, 0, prev_hash=p1.hash)  # green, chained
+    """Pixel chained on top of another always wins (cumulative work > parent alone)."""
+    p1 = make_pixel(10, 10, 255, 0, 0)  # red, no prev
+    p2 = make_pixel(10, 10, 0, 255, 0, prev_hash=p1.hash)  # green, chained on top
 
     bc_ab = apply_pixels_fresh([p1, p2])
     bc_ba = apply_pixels_fresh([p2, p1])
@@ -54,7 +58,13 @@ def test_chained_pixels():
     c_ab = bc_ab.canvas.get_pixel(10, 10)
     c_ba = bc_ba.canvas.get_pixel(10, 10)
     assert c_ab == c_ba, f"Chained pixels: {c_ab} != {c_ba}"
-    print(f"  ✓ Chained pixels → winner = {c_ab}")
+    # The chained pixel MUST win because chain_work(p2) = p2.work + p1.work > p1.work
+    assert c_ab == (0, 255, 0), f"Chained pixel should win, got {c_ab}"
+    # Verify chain_work values
+    cw_ab = bc_ab._chain_work
+    assert cw_ab[p2.hash.hex()] == p2.pow_work() + p1.pow_work()
+    assert cw_ab[p1.hash.hex()] == p1.pow_work()
+    print(f"  ✓ Chained pixel always wins → {c_ab} (chain_work={cw_ab[p2.hash.hex()]})")
 
 
 def test_many_pixels_all_permutations():
@@ -81,13 +91,17 @@ def test_many_pixels_all_permutations():
         if color != ref_color:
             fail += 1
             best = bc.epoch_states["a"].coord_best[(42, 42)]
-            print(f"    FAIL: got {color} (hash={best.hash.hex()[:16]}, work={best.pow_work()}) "
-                  f"expected {ref_color}")
+            print(
+                f"    FAIL: got {color} (hash={best.hash.hex()[:16]}, work={best.pow_work()}) "
+                f"expected {ref_color}"
+            )
         else:
             ok += 1
 
     assert fail == 0, f"{fail}/{ok + fail} permutations diverged!"
-    print(f"  ✓ 5 chained pixels: all {ok} permutations agree → {ref_color} (hash={ref_best_hash}, work={ref_work})")
+    print(
+        f"  ✓ 5 chained pixels: all {ok} permutations agree → {ref_color} (hash={ref_best_hash}, work={ref_work})"
+    )
 
 
 def test_many_coords_shuffled():
@@ -99,8 +113,15 @@ def test_many_coords_shuffled():
             r = (coord_i * 30 + j * 50) % 256
             g = (coord_i * 70 + j * 80) % 256
             b = (coord_i * 110 + j * 30) % 256
-            p = make_pixel(coord_i, 0, r, g, b, prev_hash=prev,
-                           nonce_start=(coord_i * 5 + j) * 1000000)
+            p = make_pixel(
+                coord_i,
+                0,
+                r,
+                g,
+                b,
+                prev_hash=prev,
+                nonce_start=(coord_i * 5 + j) * 1000000,
+            )
             pixels.append(p)
             prev = p.hash
 
@@ -139,7 +160,9 @@ def test_realistic_conflict():
 
     # Show individual works
     for i, p in enumerate(all_pixels):
-        print(f"    p{i+1}: color={p.color_hex} work={p.pow_work()} hash={p.hash.hex()[:16]}")
+        print(
+            f"    p{i + 1}: color={p.color_hex} work={p.pow_work()} hash={p.hash.hex()[:16]}"
+        )
 
     # Test all permutations
     ref = apply_pixels_fresh(all_pixels)
@@ -158,8 +181,8 @@ def test_realistic_conflict():
 
 def test_orphan_child_before_parent():
     """Child pixel arrives before its parent → buffered as orphan, then released."""
-    p1 = make_pixel(20, 20, 255, 0, 0)                    # parent (no prev)
-    p2 = make_pixel(20, 20, 0, 255, 0, prev_hash=p1.hash) # child
+    p1 = make_pixel(20, 20, 255, 0, 0)  # parent (no prev)
+    p2 = make_pixel(20, 20, 0, 255, 0, prev_hash=p1.hash)  # child
 
     bc = Blockchain()
 
@@ -173,15 +196,16 @@ def test_orphan_child_before_parent():
     # Parent arrives — should release child
     assert bc.accept_pixel(p1) is True, "Parent should be accepted"
     assert bc._orphan_count == 0, "Orphan buffer should be empty"
-    # Both pixels applied — winner is highest individual work
+    # Both pixels applied — child wins (chain_work = p2.work + p1.work > p1.work)
     state = bc.epoch_states["a"]
     assert state.pixel_count == 2, f"Expected 2 pixels, got {state.pixel_count}"
+    assert bc.canvas.get_pixel(20, 20) == (0, 255, 0), "Child should win (chained)"
     print(f"  ✓ Child buffered then released, canvas = {bc.canvas.get_pixel(20, 20)}")
 
 
 def test_orphan_cascade():
     """A→B→C chain: C arrives first, then B, then A — all released in cascade."""
-    pA = make_pixel(30, 30, 255, 0, 0)                      # root
+    pA = make_pixel(30, 30, 255, 0, 0)  # root
     pB = make_pixel(30, 30, 0, 255, 0, prev_hash=pA.hash, nonce_start=1000000)
     pC = make_pixel(30, 30, 0, 0, 255, prev_hash=pB.hash, nonce_start=2000000)
 
@@ -238,8 +262,9 @@ def test_orphan_buffer_limit():
         fake_parent = b"\x01" * 32
         orphans = []
         for i in range(7):
-            p = make_pixel(50 + i, 50, 255, 0, 0, prev_hash=fake_parent,
-                           nonce_start=i * 1000000)
+            p = make_pixel(
+                50 + i, 50, 255, 0, 0, prev_hash=fake_parent, nonce_start=i * 1000000
+            )
             orphans.append(p)
 
         results = [bc.accept_pixel(p) for p in orphans]
@@ -251,6 +276,76 @@ def test_orphan_buffer_limit():
         print(f"  ✓ Buffer limit enforced: {accepted} accepted, {rejected} rejected")
     finally:
         Blockchain._MAX_ORPHANS = old_max
+
+
+def test_draw_on_top_always_replaces():
+    """Drawing on top of a pixel 10 times — each new pixel must replace the old one."""
+    prev = None
+    colors = []
+    pixels = []
+    for i in range(10):
+        r, g, b = (i * 25) % 256, (i * 50 + 100) % 256, (i * 75 + 50) % 256
+        p = make_pixel(99, 99, r, g, b, prev_hash=prev, nonce_start=i * 1000000)
+        pixels.append(p)
+        colors.append((r, g, b))
+        prev = p.hash
+
+    # Apply in order — each should replace the previous
+    bc = Blockchain()
+    for i, p in enumerate(pixels):
+        bc.accept_pixel(p)
+        current = bc.canvas.get_pixel(99, 99)
+        assert current == colors[i], (
+            f"After pixel {i}: expected {colors[i]}, got {current}"
+        )
+
+    # Verify chain_work grows monotonically
+    cumulative = 0
+    for p in pixels:
+        cumulative += p.pow_work()
+        assert bc._chain_work[p.hash.hex()] == cumulative, (
+            f"chain_work mismatch for pixel {p.hash.hex()[:8]}"
+        )
+
+    print(f"  ✓ 10 layers: each replaces the previous (final chain_work={cumulative})")
+
+
+def test_branching_chains():
+    """Two branches from the same root — the heavier branch wins regardless of order."""
+    root = make_pixel(77, 77, 128, 128, 128)  # gray root
+
+    # Branch A: root → A1 → A2  (3 pixels)
+    a1 = make_pixel(77, 77, 255, 0, 0, prev_hash=root.hash, nonce_start=1000000)
+    a2 = make_pixel(77, 77, 255, 50, 0, prev_hash=a1.hash, nonce_start=2000000)
+
+    # Branch B: root → B1  (2 pixels only — shorter chain)
+    b1 = make_pixel(77, 77, 0, 0, 255, prev_hash=root.hash, nonce_start=3000000)
+
+    all_pixels = [root, a1, a2, b1]
+
+    # Branch A chain_work = root.work + a1.work + a2.work
+    # Branch B chain_work = root.work + b1.work
+    # A2 should always win (longer chain, more cumulative work)
+    ref = apply_pixels_fresh(all_pixels)
+    ref_color = ref.canvas.get_pixel(77, 77)
+
+    # Verify A2 wins
+    expected_a2_cw = root.pow_work() + a1.pow_work() + a2.pow_work()
+    expected_b1_cw = root.pow_work() + b1.pow_work()
+    assert expected_a2_cw > expected_b1_cw, "Test setup: branch A should be heavier"
+
+    fail = 0
+    for perm in itertools.permutations(all_pixels):
+        bc = apply_pixels_fresh(perm)
+        color = bc.canvas.get_pixel(77, 77)
+        if color != ref_color:
+            fail += 1
+
+    assert fail == 0, f"{fail}/24 permutations diverged for branching chains!"
+    print(
+        f"  ✓ Branch A (chain_work={expected_a2_cw}) beats Branch B ({expected_b1_cw})"
+        f" — all 24 permutations agree → {ref_color}"
+    )
 
 
 if __name__ == "__main__":
@@ -282,5 +377,11 @@ if __name__ == "__main__":
 
     print("\n9. Orphan buffer limit (DoS protection):")
     test_orphan_buffer_limit()
+
+    print("\n10. Draw on top always replaces:")
+    test_draw_on_top_always_replaces()
+
+    print("\n11. Branching chains — heaviest branch wins:")
+    test_branching_chains()
 
     print("\n✓ All convergence tests passed!")

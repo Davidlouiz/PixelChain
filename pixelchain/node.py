@@ -159,7 +159,9 @@ class Node:
             )
         )
 
-    async def _on_pixel_mined_on_loop(self, entry: PoolEntry, pixel: Pixel, pool_id: str):
+    async def _on_pixel_mined_on_loop(
+        self, entry: PoolEntry, pixel: Pixel, pool_id: str
+    ):
         """Process a mined pixel on the event loop (thread-safe)."""
         accepted = self.blockchain.accept_pixel(pixel)
         if accepted:
