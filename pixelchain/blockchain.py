@@ -121,19 +121,10 @@ class Blockchain:
         if state.pixel_count >= PIXELS_PER_EPOCH - 1:  # leave last slot for closure
             return False
 
-        # Validate prev_pixel_hash
-        coord = (pixel.x, pixel.y)
-        if pixel.prev_pixel_hash is not None:
-            current_best = state.coord_best.get(coord)
-            if current_best is None:
-                logger.debug("prev_pixel_hash set but no existing pixel at coord")
-                return False
-            # prev_pixel_hash should reference a known pixel at this coord
-            # For simplicity, we accept it if it matches the current best
-            # A more complete implementation would track full per-coord chains
-        else:
-            # First pixel on this coord in this epoch — ok
-            pass
+        # Validate prev_pixel_hash — stored in the pixel data (part of its hash)
+        # but NOT used for conflict resolution.  We accept the pixel regardless
+        # of whether the referenced parent has arrived, to avoid order-dependent
+        # rejection that would break convergence.
 
         # Accept the pixel
         self._apply_pixel(pixel, state)
@@ -149,11 +140,12 @@ class Blockchain:
         coord = (pixel.x, pixel.y)
         pixel_work = pixel.pow_work()
 
-        # Conflict resolution: keep heaviest cumulative PoW on this coordinate
+        # Conflict resolution: highest individual PoW work wins.
+        # NOTE: prev_pixel_hash is intentionally NOT used for score computation
+        # to ensure convergence regardless of pixel arrival order.  Each pixel
+        # competes purely on its own proof-of-work merit (CRDT-safe).
         existing_work = state.coord_work[coord]
         new_work = pixel_work
-        if pixel.prev_pixel_hash is not None:
-            new_work += existing_work  # builds on existing chain
 
         # Determine whether this pixel should replace the current best
         if coord not in state.coord_best:
@@ -166,13 +158,14 @@ class Blockchain:
         else:
             replace = False
 
+        # Always count this pixel's work (order-independent total)
+        self.total_work += pixel_work
+
         if replace:
             state.coord_best[coord] = pixel
             state.coord_work[coord] = new_work
             # Update canvas
             self.canvas.set_pixel(pixel.x, pixel.y, pixel.r, pixel.g, pixel.b)
-            # Update total work
-            self.total_work += pixel_work
             # Notify
             if self._on_canvas_update:
                 self._on_canvas_update(pixel.x, pixel.y, pixel.r, pixel.g, pixel.b)

@@ -144,36 +144,37 @@ class Node:
         return None
 
     def _on_pixel_mined(self, entry: PoolEntry):
-        """Called when a pixel in the pool has been successfully mined."""
+        """Called from mining thread — schedule blockchain work on the event loop."""
         pixel = entry.pixel
         if pixel is None:
             return
 
-        # Accept into our own blockchain
+        # IMPORTANT: Do NOT call accept_pixel here (mining thread).
+        # All blockchain mutations must happen on the event loop thread
+        # to avoid race conditions with incoming peer pixels.
+        pool_id = entry.id
+        self._loop.call_soon_threadsafe(
+            lambda e=entry, p=pixel, pid=pool_id: self._loop.create_task(
+                self._on_pixel_mined_on_loop(e, p, pid)
+            )
+        )
+
+    async def _on_pixel_mined_on_loop(self, entry: PoolEntry, pixel: Pixel, pool_id: str):
+        """Process a mined pixel on the event loop (thread-safe)."""
         accepted = self.blockchain.accept_pixel(pixel)
         if accepted:
             hash_hex = pixel.hash.hex()
-            self._pool_pixel_map[entry.id] = hash_hex
-            # Broadcast to the network and notify browser from the event loop
-            pixel_dict = pixel.to_dict()
-            pool_id = entry.id
-            self._loop.call_soon_threadsafe(
-                lambda: self._loop.create_task(
-                    self._on_pixel_mined_async(pixel_dict, pool_id)
-                )
-            )
+            self._pool_pixel_map[pool_id] = hash_hex
             entry.status = "confirmed"
-            logger.info("Local pixel %s confirmed: hash=%s", entry.id, hash_hex[:16])
+            logger.info("Local pixel %s confirmed: hash=%s", pool_id, hash_hex[:16])
+            # Broadcast to peers and notify browser
+            await self.network.broadcast(pixel.to_dict())
+            await self._ws_broadcast({"type": "pool_confirmed", "id": pool_id})
         else:
-            # Requeue for mining (maybe epoch changed)
+            # Requeue for mining (maybe epoch changed or conflict lost)
             entry.status = "pending"
             entry.cancel_event.clear()
-            logger.debug("Local pixel %s rejected, requeuing", entry.id)
-
-    async def _on_pixel_mined_async(self, pixel_dict: dict, pool_id: str):
-        """Async follow-up after a pixel is mined (runs on the event loop)."""
-        await self.network.broadcast(pixel_dict)
-        await self._ws_broadcast({"type": "pool_confirmed", "id": pool_id})
+            logger.debug("Local pixel %s rejected, requeuing", pool_id)
 
     def _on_blockchain_pixel_confirmed(self, pixel: Pixel):
         """Called when any pixel is confirmed on the blockchain."""
