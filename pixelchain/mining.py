@@ -42,6 +42,7 @@ class MiningPool:
         get_closure_hash: Callable[[], bytes],
         get_prev_pixel_hash: Callable[[int, int], Optional[bytes]],
         on_mined: Callable[[PoolEntry], None],
+        get_canvas_color: Optional[Callable[[int, int], tuple]] = None,
         num_workers: int = 2,
     ):
         self._entries: Dict[str, PoolEntry] = {}
@@ -52,6 +53,7 @@ class MiningPool:
         self._get_difficulty = get_difficulty
         self._get_closure_hash = get_closure_hash
         self._get_prev_pixel_hash = get_prev_pixel_hash
+        self._get_canvas_color = get_canvas_color
         self._on_mined = on_mined
         self._num_workers = num_workers
         self._workers: List[threading.Thread] = []
@@ -223,6 +225,27 @@ class MiningPool:
         difficulty = self._get_difficulty()
         closure_hash = self._get_closure_hash()
         prev_pixel_hash = self._get_prev_pixel_hash(entry.x, entry.y)
+
+        # Same-color short-circuit: if canvas colour already matches the
+        # requested colour there is nothing to mine (another pixel may have
+        # been accepted between pool-add and now).
+        if prev_pixel_hash is not None and self._get_canvas_color:
+            cr, cg, cb = self._get_canvas_color(entry.x, entry.y)
+            if (cr, cg, cb) == (entry.r, entry.g, entry.b):
+                with self._lock:
+                    entry.status = "cancelled"
+                    coord = (entry.x, entry.y)
+                    if self._coord_entry.get(coord) == entry.id:
+                        del self._coord_entry[coord]
+                logger.debug(
+                    "Skipped same-color pixel %s at (%d,%d)",
+                    entry.id,
+                    entry.x,
+                    entry.y,
+                )
+                # Notify node so it can send pool_confirmed to browser
+                self._on_mined(entry)
+                return
 
         pixel = Pixel(
             x=entry.x,

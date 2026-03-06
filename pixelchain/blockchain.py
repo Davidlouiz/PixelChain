@@ -153,6 +153,13 @@ class Blockchain:
                     logger.debug("Orphan buffer full, rejecting pixel")
                     return False
 
+            # Same-color rejection: refuse a pixel whose colour is identical
+            # to its parent — it would bloat the chain for no visual change.
+            parent = state.pixels.get(parent_hex)
+            if parent and (pixel.r, pixel.g, pixel.b) == (parent.r, parent.g, parent.b):
+                logger.debug("Rejected same-color pixel at (%d,%d)", pixel.x, pixel.y)
+                return False
+
         # Accept the pixel (and release any orphans waiting for it)
         self._apply_pixel(pixel, state)
         self._release_orphans(hash_hex, state)
@@ -217,6 +224,17 @@ class Blockchain:
             return
         for orphan in waiting:
             self._orphan_count -= 1
+            # Same-color rejection applies to orphans too.
+            parent = state.pixels.get(parent_hex)
+            if parent and (orphan.r, orphan.g, orphan.b) == (
+                parent.r,
+                parent.g,
+                parent.b,
+            ):
+                logger.debug(
+                    "Rejected same-color orphan at (%d,%d)", orphan.x, orphan.y
+                )
+                continue  # skip — children stay orphaned & eventually evicted
             # The orphan already passed all validation in accept_pixel and
             # was added to _seen_hashes.  Just apply it and recurse.
             self._apply_pixel(orphan, state)

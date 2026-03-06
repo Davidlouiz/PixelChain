@@ -40,6 +40,7 @@ class Node:
             get_closure_hash=self._get_current_closure_hash,
             get_prev_pixel_hash=self._get_prev_pixel_hash,
             on_mined=self._on_pixel_mined,
+            get_canvas_color=lambda x, y: self.blockchain.canvas.get_pixel(x, y),
             num_workers=2,
         )
 
@@ -147,6 +148,13 @@ class Node:
         """Called from mining thread — schedule blockchain work on the event loop."""
         pixel = entry.pixel
         if pixel is None:
+            # Same-color short-circuit: pixel was never mined, just notify UI.
+            pool_id = entry.id
+            self._loop.call_soon_threadsafe(
+                lambda pid=pool_id: self._loop.create_task(
+                    self._ws_broadcast({"type": "pool_confirmed", "id": pid})
+                )
+            )
             return
 
         # IMPORTANT: Do NOT call accept_pixel here (mining thread).
@@ -178,9 +186,9 @@ class Node:
             self._pool_pixel_map[pool_id] = hash_hex
             entry.status = "confirmed"
             logger.info("Local pixel %s confirmed: hash=%s", pool_id, hash_hex[:16])
-            # Broadcast to peers and notify browser
-            await self.network.broadcast(pixel.to_dict())
+            # Notify browser FIRST (fast), then broadcast to peers (may block)
             await self._ws_broadcast({"type": "pool_confirmed", "id": pool_id})
+            await self.network.broadcast(pixel.to_dict())
         else:
             # Pixel rejected (e.g. epoch changed, duplicate).  Just drop it;
             # the pool's coord dedup ensures only the latest attempt matters.
@@ -503,6 +511,11 @@ class Node:
             r = int(color[0:2], 16)
             g = int(color[2:4], 16)
             b = int(color[4:6], 16)
+            # Skip if the canvas already has this exact colour — no point mining.
+            cr, cg, cb = self.blockchain.canvas.get_pixel(x, y)
+            if (cr, cg, cb) == (r, g, b):
+                await self._ws_broadcast({"type": "pool_confirmed", "id": pixel_id})
+                return
             self.pool.add_pixel(pixel_id, x, y, r, g, b)
 
         elif msg_type == "cancel_pixel":

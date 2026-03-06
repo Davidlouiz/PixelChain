@@ -348,6 +348,35 @@ def test_branching_chains():
     )
 
 
+def test_same_color_rejection():
+    """A pixel with the same colour as its parent must be rejected."""
+    # Mine a red pixel
+    p1 = make_pixel(20, 20, 255, 0, 0)
+    # Mine another red pixel chained on top (same colour)
+    p_same = make_pixel(20, 20, 255, 0, 0, prev_hash=p1.hash, nonce_start=5000000)
+    # Mine a green pixel chained on top (different colour)
+    p_diff = make_pixel(20, 20, 0, 255, 0, prev_hash=p1.hash, nonce_start=9000000)
+
+    bc = Blockchain()
+    assert bc.accept_pixel(p1), "p1 should be accepted"
+    assert not bc.accept_pixel(p_same), "same-color pixel must be rejected"
+    assert bc.accept_pixel(p_diff), "different-color pixel must be accepted"
+    assert bc.epoch_states["a"].pixel_count == 2, "Only 2 pixels should be in chain"
+    assert bc.canvas.get_pixel(20, 20) == (0, 255, 0), "Canvas should show green"
+
+    # Orphan path: same-color orphan should be rejected when parent arrives
+    p3 = make_pixel(30, 30, 128, 0, 0)
+    p3_same = make_pixel(30, 30, 128, 0, 0, prev_hash=p3.hash, nonce_start=7000000)
+    bc2 = Blockchain()
+    # Submit orphan first
+    assert bc2.accept_pixel(p3_same), "orphan is buffered (returns True)"
+    # Now submit parent — orphan should be rejected during release
+    assert bc2.accept_pixel(p3), "parent accepted"
+    assert bc2.epoch_states["a"].pixel_count == 1, "Orphan same-color should not count"
+    assert bc2.canvas.get_pixel(30, 30) == (128, 0, 0)
+    print("  ✓ Same-color pixels correctly rejected (direct + orphan)")
+
+
 if __name__ == "__main__":
     print("=== Convergence Tests ===\n")
 
@@ -383,5 +412,8 @@ if __name__ == "__main__":
 
     print("\n11. Branching chains — heaviest branch wins:")
     test_branching_chains()
+
+    print("\n12. Same-color pixel rejection:")
+    test_same_color_rejection()
 
     print("\n✓ All convergence tests passed!")
