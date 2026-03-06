@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Set
 
 from .blockchain import Blockchain, GENESIS_CLOSURE_HASH
 from .config import Config, PIXELS_PER_EPOCH, PROTOCOL_VERSION
+from .epoch_util import epoch_to_index
 from .mining import MiningPool, PoolEntry
 from .models import ClosureBlock, Pixel
 from .network import P2PNetwork, PeerInfo
@@ -551,6 +552,20 @@ class Node:
                         "type": "get_epoch_pixels",
                         "epoch": closure.epoch,
                     },
+                )
+            elif epoch_to_index(closure.epoch) > epoch_to_index(self.blockchain.current_epoch):
+                # Peer is ahead — we're missing closures for earlier epochs.
+                # Request the full chain so _handle_closures can catch us up.
+                logger.info(
+                    "Peer %s is ahead (closure epoch %s, we are at %s) "
+                    "— requesting full chain",
+                    peer.address,
+                    closure.epoch,
+                    self.blockchain.current_epoch,
+                )
+                await self.network.send_to_peer(
+                    peer.address,
+                    {"type": "get_closures", "from_epoch": "a"},
                 )
             else:
                 logger.debug(
