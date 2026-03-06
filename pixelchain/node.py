@@ -217,21 +217,26 @@ class Node:
             await self._ws_broadcast({"type": "pool_confirmed", "id": pool_id})
             await self.network.broadcast(pixel.to_dict())
         else:
-            # Pixel rejected — likely epoch changed or epoch full.
-            # If the pixel was mined for a stale epoch, requeue it so it
-            # gets re-mined with the correct epoch/closure_hash.
+            # Pixel rejected — likely epoch changed, closure_hash changed
+            # (reorg), or epoch full.  Requeue so it gets re-mined with the
+            # correct epoch/closure_hash.
             epoch_changed = pixel.epoch != self.blockchain.current_epoch
+            closure_changed = False
             epoch_full = False
             if not epoch_changed:
                 state = self.blockchain.epoch_states.get(self.blockchain.current_epoch)
-                if state and state.pixel_count >= PIXELS_PER_EPOCH - 1:
-                    epoch_full = True
+                if state:
+                    if state.pixel_count >= PIXELS_PER_EPOCH - 1:
+                        epoch_full = True
+                    if pixel.closure_hash != state.closure_hash:
+                        closure_changed = True
 
-            if epoch_changed or epoch_full:
+            if epoch_changed or epoch_full or closure_changed:
+                reason = ("epoch changed" if epoch_changed
+                          else "closure changed" if closure_changed
+                          else "epoch full")
                 logger.info(
-                    "Local pixel %s rejected (%s), requeuing",
-                    pool_id,
-                    "epoch changed" if epoch_changed else "epoch full",
+                    "Local pixel %s rejected (%s), requeuing", pool_id, reason,
                 )
                 entry.status = "pending"
                 entry.cancel_event = threading.Event()
@@ -703,6 +708,11 @@ class Node:
                 for closure in incoming:
                     self.blockchain.accept_closure(closure, sync_mode=True)
 
+                # Requeue pool pixels so they're re-mined with the new
+                # epoch / closure_hash (otherwise they get silently dropped).
+                requeued = self.pool.requeue_all()
+                for rid in requeued:
+                    await self._ws_broadcast({"type": "pool_requeued", "id": rid})
                 # Download canvas + current-epoch pixels
                 await self.network.send_to_peer(
                     peer.address, {"type": "get_canvas"}
@@ -739,6 +749,10 @@ class Node:
                 peer.address,
                 self.blockchain.current_epoch,
             )
+            # Requeue pool pixels for the new epoch
+            requeued = self.pool.requeue_all()
+            for rid in requeued:
+                await self._ws_broadcast({"type": "pool_requeued", "id": rid})
             # Download the canvas that corresponds to the tip of the chain
             await self.network.send_to_peer(peer.address, {"type": "get_canvas"})
             # Then request current-epoch pixels
@@ -767,16 +781,18 @@ class Node:
 
         try:
             canvas = Canvas.from_base64(msg.get("pixels", ""))
-            self.blockchain.canvas = canvas
-            logger.info("Canvas loaded from peer %s", peer.address)
-            # Notify WS clients about the new canvas
-            await self._ws_broadcast(
-                {"type": "canvas_init", "canvas": self.blockchain.canvas.to_list()}
-            )
-            # Check if we need to mine a closure for the current epoch
-            self._check_epoch_closure()
         except Exception as e:
             logger.debug("Invalid canvas from %s: %s", peer.address, e)
+            return
+
+        self.blockchain.canvas = canvas
+        logger.info("Canvas loaded from peer %s", peer.address)
+        # Notify WS clients about the new canvas
+        await self._ws_broadcast(
+            {"type": "canvas_init", "pixels": self.blockchain.canvas.to_base64()}
+        )
+        # Check if we need to mine a closure for the current epoch
+        self._check_epoch_closure()
 
     async def _handle_get_epoch_pixels(self, peer: PeerInfo, msg: dict):
         """Handle request for all pixels in an epoch."""

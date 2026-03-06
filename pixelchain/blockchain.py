@@ -502,11 +502,22 @@ class Blockchain:
             else 0,
         )
 
+        # Save current canvas so nodes that synced closures without pixels
+        # can restore the correct visual state on restart.
+        canvas_path = os.path.join(data_dir, "canvas.b64")
+        with open(canvas_path, "w") as f:
+            f.write(self.canvas.to_base64())
+
     def load_state(self, data_dir: str) -> bool:
         """Load blockchain state from disk.  Returns True if state was loaded."""
         chain_path = os.path.join(data_dir, "chain.jsonl")
         if not os.path.exists(chain_path):
             return False
+
+        # Check if we have a saved canvas (from a node that synced
+        # closures without full epoch pixels).
+        canvas_path = os.path.join(data_dir, "canvas.b64")
+        has_canvas = os.path.exists(canvas_path)
 
         pixels_loaded = 0
         closures_loaded = 0
@@ -536,13 +547,29 @@ class Blockchain:
                             )
                     elif d.get("type") == "closure":
                         closure = ClosureBlock.from_dict(d)
+                        # Try normal acceptance first (validates pixel count, Merkle, etc.).
+                        # If that fails and we have a saved canvas, fall back to sync_mode
+                        # which is needed for epochs synced from peers (no local pixels).
                         if self.accept_closure(closure):
+                            closures_loaded += 1
+                        elif has_canvas and self.accept_closure(closure, sync_mode=True):
                             closures_loaded += 1
                         else:
                             logger.warning(
                                 "Failed to replay closure for epoch %s",
                                 d.get("epoch", "?"),
                             )
+
+            # Load the saved canvas.  This restores the correct visual state
+            # even for epochs whose pixels were never stored locally.
+            if has_canvas:
+                try:
+                    with open(canvas_path, "r") as f:
+                        self.canvas = Canvas.from_base64(f.read())
+                    logger.info("Loaded saved canvas from %s", canvas_path)
+                except Exception as e:
+                    logger.warning("Failed to load canvas: %s", e)
+
         finally:
             # Restore callbacks
             self._on_canvas_update = old_cu
