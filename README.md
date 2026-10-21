@@ -36,9 +36,34 @@
 > d'édition** que ce projet voulait imposer. Je n'ai pas de solution satisfaisante à ce
 > jour ; les pistes que je n'ai pas explorées sont en bas de page.
 
+## ✨ L'étincelle : r/place
+
+<div align="center">
+  <a href="https://www.reddit.com/r/place/">
+    <img src="docs/rplace-hommage.svg" alt="Illustration originale inspirée de r/place : un cœur en pixels orange sur une mosaïque colorée" width="100%">
+  </a>
+  <sub>
+    L'étincelle : <a href="https://www.reddit.com/r/place/">r/place</a>.
+    Illustration originale en hommage (SVG libre), avec le logo r/place du domaine public —
+    ce n'est pas une capture officielle.
+  </sub>
+</div>
+
+PixelChain est né d'une fascination pour **r/place** : cette toile géante où des
+millions de personnes ont dessiné, recouvert, défendu et parfois saboté des pixels
+pendant quelques jours. Ce qui m'intéressait n'était pas seulement le résultat, mais
+le fait qu'une **œuvre collective émerge sans chef d'orchestre** : des communautés
+négocient une place, des idées se diffusent, des références se superposent, et
+l'histoire de ces négociations reste visible dans la matière même de la toile.
+
+r/place est un événement éphémère, fermé par décision de la plateforme. PixelChain
+voulait prolonger cette idée : une toile qui ne s'arrête pas, qui n'appartient à
+personne, et dont l'histoire est **conservée par le protocole lui-même** plutôt que
+par la bonne volonté d'une plateforme.
+
 ## 🎯 Le but
 
-L'idée de départ tient en trois promesses :
+L'idée de départ tient en quatre promesses :
 
 1. **Une toile unique, ouverte et sans autorité centrale.** 1 000 × 1 000 pixels RGB,
    modifiables par n'importe qui, sans compte, sans serveur officiel, sans base de
@@ -49,9 +74,25 @@ L'idée de départ tient en trois promesses :
 3. **Des conflits tranchés par le travail, pas par l'ordre d'arrivée.** Deux personnes
    qui peignent la même case doivent pouvoir départager leurs versions par la preuve
    de travail cumulée, de façon déterministe.
+4. **Une mémoire collective, pas un flux.** Graver dans le marbre les idées, les
+   influences et les références d'une époque, de façon décentralisée : que l'histoire
+   ne soit pas effacée par le prochain scroll, mais conservée et transmissible à
+   travers les époques.
 
-Le point 2 est la vraie ambition du projet — et c'est précisément celui qui n'a pas
-abouti.
+Le mot « époque » est volontairement double. Il désigne les **époques du protocole**
+(`a`, `b`, `c`, …), ces tranches de temps qui rythment la toile et dont chaque clôture
+devait sceller le contenu. Il désigne aussi les **époques humaines** : les générations
+de personnes qui passent, dessinent, se disputent une case, puis laissent la place.
+L'ambition était de faire de la chaîne une sorte de **palimpseste numérique** : chaque
+pixel est une trace prouvée par le travail, chaque clôture est un chapitre, et
+l'ensemble peut être rejoué par n'importe qui, tant qu'un pair en conserve une copie.
+Pas de curator, pas de serveur à débrancher, pas de plateforme qui puisse réécrire
+l'histoire en douce.
+
+C'est une ambition de **conservation** : rendre les idées et les influences d'une
+époque durables, vérifiables et transmissibles, sans confier cette mémoire à une
+autorité unique. Le point 2 — la cadence globale — était le moyen de donner un rythme
+commun à cette mémoire ; c'est précisément lui qui n'a pas abouti.
 
 | Objectif | État |
 |---|---|
@@ -177,6 +218,12 @@ choix local déguisé en consensus.
 Les mécanismes ajoutés ensuite (buffer de clôtures en attente, récupération des pixels
 d'époque, réorganisation par `closure_work`) sont des pansements : ils propagent la
 vue de celui qui a closé le premier, ils ne rendent pas l'ensemble canonique.
+
+C'est d'autant plus frustrant que l'ambition était mémorielle : **pour conserver
+l'histoire, il faut une histoire canonique**. Deux nœuds qui closent des ensembles
+différents n'écrivent pas le même chapitre — et aucun mécanisme ne permet de dire
+lequel est le bon. La toile converge peut-être localement, mais le livre n'a pas de
+version unique.
 
 ### Autres limites
 
@@ -366,6 +413,11 @@ et je ne sais pas aujourd'hui comment la tenir proprement. Mais l'échec est loc
 La brique « pixel avec preuve de travail », la résolution déterministe des conflits par
 travail cumulé, le gossip, la synchronisation et l'interface fonctionnent et sont
 testables.
+
+L'idée de départ, elle, reste intacte : graver dans le marbre les idées et les
+influences d'une époque, de façon décentralisée, pour que cette mémoire survive à la
+plateforme qui l'a vue naître et traverse les époques. C'est peut-être la partie que je
+regrette le plus de ne pas avoir réussi à offrir.
 
 Le point d'entrée pour reprendre le travail est précisément là où ça coince : la
 construction du bloc dans `_start_closure_mining()` et sa validation dans
